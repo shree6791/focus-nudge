@@ -76,11 +76,7 @@ async function handleUpgrade() {
     const extensionId = chrome.runtime.id;
     const extensionOptionsUrl = chrome.runtime.getURL('src/ui/options/options.html');
     
-    // Get coupon code if provided
-    const couponCodeInput = document.getElementById('couponCode');
-    const couponCode = couponCodeInput?.value?.trim() || null;
-    
-    // Create checkout session
+    // Create checkout session (Stripe Checkout will handle coupon codes natively)
     const response = await fetch(`${apiUrl}/api/create-checkout-session`, {
       method: 'POST',
       headers: {
@@ -89,13 +85,14 @@ async function handleUpgrade() {
       body: JSON.stringify({
         userId: userId,
         extensionId: extensionId,
-        extensionOptionsUrl: extensionOptionsUrl,
-        couponCode: couponCode
+        extensionOptionsUrl: extensionOptionsUrl
       })
     });
 
     if (!response.ok) {
-      throw new Error('Failed to create checkout session');
+      const errorData = await response.json().catch(() => ({ error: 'Failed to create checkout session' }));
+      const errorMessage = errorData.details || errorData.error || 'Failed to create checkout session';
+      throw new Error(errorMessage);
     }
 
     const { sessionId, url } = await response.json();

@@ -111,7 +111,7 @@ app.get('/api/verify-license', async (req, res) => {
  */
 app.post('/api/create-checkout-session', async (req, res) => {
   try {
-    const { userId, extensionId, extensionOptionsUrl, couponCode } = req.body;
+    const { userId, extensionId, extensionOptionsUrl } = req.body;
 
     if (!userId) {
       return res.status(400).json({ error: 'Missing userId' });
@@ -130,10 +130,12 @@ app.post('/api/create-checkout-session', async (req, res) => {
     console.log(`[CHECKOUT] Creating session for userId: ${userId}`);
     console.log(`[CHECKOUT] Extension ID: ${extensionId || 'not provided'}`);
     console.log(`[CHECKOUT] Extension Options URL: ${extensionOptionsUrl || 'not provided'}`);
-    console.log(`[CHECKOUT] Coupon Code: ${couponCode || 'not provided'}`);
     console.log(`[CHECKOUT] Using Price ID: ${STRIPE_PRICE_ID}`);
+    console.log(`[CHECKOUT] Note: Coupon codes can be entered directly on Stripe Checkout page`);
 
     // Build checkout session config
+    // Stripe Checkout will automatically show "Have a promo code?" link
+    // Users can enter coupon codes directly on the checkout page
     const sessionConfig = {
       payment_method_types: ['card'],
       line_items: [{
@@ -145,14 +147,9 @@ app.post('/api/create-checkout-session', async (req, res) => {
       cancel_url: cancelUrl,
       client_reference_id: userId,
       metadata: { userId },
+      // Allow promotion codes to be entered on checkout page
+      allow_promotion_codes: true,
     };
-
-    // Add coupon code if provided
-    if (couponCode) {
-      sessionConfig.discounts = [{
-        coupon: couponCode,
-      }];
-    }
 
     // Create Stripe Checkout Session
     const session = await stripe.checkout.sessions.create(sessionConfig);
@@ -160,6 +157,15 @@ app.post('/api/create-checkout-session', async (req, res) => {
     res.json({ sessionId: session.id, url: session.url });
   } catch (error) {
     console.error('Checkout session error:', error);
+    
+    // Return user-friendly error messages
+    if (error.type === 'StripeInvalidRequestError') {
+      return res.status(400).json({ 
+        error: 'Stripe error',
+        details: error.message 
+      });
+    }
+    
     res.status(500).json({ error: error.message });
   }
 });
