@@ -334,10 +334,22 @@ async function loadWeeklySummary() {
 
 // Event listeners
 
+// Helper function to show save confirmation
+function showSaveConfirmation(element) {
+  const originalBg = element.style.backgroundColor;
+  element.style.backgroundColor = '#4CAF50';
+  element.style.transition = 'background-color 0.3s';
+  setTimeout(() => {
+    element.style.backgroundColor = originalBg;
+  }, 300);
+}
+
 toneSelect.addEventListener('change', async (e) => {
   const settings = await getSettings();
   settings.tone = e.target.value;
   await saveSettings(settings);
+  showSaveConfirmation(e.target);
+  console.log('[Focus Nudge] Settings saved: tone =', e.target.value);
 });
 
 driftThresholdInput.addEventListener('change', async (e) => {
@@ -346,6 +358,8 @@ driftThresholdInput.addEventListener('change', async (e) => {
   const settings = await getSettings();
   settings.drift_threshold_min = value;
   await saveSettings(settings);
+  showSaveConfirmation(e.target);
+  console.log('[Focus Nudge] Settings saved: drift_threshold_min =', value);
 });
 
 cooldownInput.addEventListener('change', async (e) => {
@@ -354,6 +368,8 @@ cooldownInput.addEventListener('change', async (e) => {
   const settings = await getSettings();
   settings.cooldown_min = value;
   await saveSettings(settings);
+  showSaveConfirmation(e.target);
+  console.log('[Focus Nudge] Settings saved: cooldown_min =', value);
 });
 
 resetSummaryBtn.addEventListener('click', async () => {
