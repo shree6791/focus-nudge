@@ -161,19 +161,20 @@ async function checkLicenseActivation(forceCheck = false) {
   const sessionId = urlParams.get('session_id');
   const paymentSuccess = urlParams.get('payment_success');
   
-  // Only poll if we have payment indicators or are forcing a check
-  if (!sessionId && !paymentSuccess && !forceCheck) {
-    return;
-  }
+  // If we have payment indicators or are forcing, show loading
+  // Otherwise, check silently (webhook might have fired, but user didn't come from payment page)
+  const showLoading = !!(sessionId || paymentSuccess || forceCheck);
   
-  await pollForLicenseActivation();
+  // Always poll if Basic (webhook might have fired even without URL params)
+  await pollForLicenseActivation(showLoading);
 }
 
 /**
  * Poll backend for license activation
  * Tries webhook first, then auto-create fallback if sessionId available
+ * @param {boolean} showLoading - Whether to show "Activating..." status
  */
-async function pollForLicenseActivation() {
+async function pollForLicenseActivation(showLoading = true) {
   try {
     const userId = await getUserId();
     const apiUrl = getApiBaseUrl();
@@ -181,13 +182,14 @@ async function pollForLicenseActivation() {
     console.log('[Focus Nudge] Starting license activation check...');
     console.log('[Focus Nudge] Current userId:', userId);
     console.log('[Focus Nudge] API URL:', apiUrl);
+    console.log('[Focus Nudge] Show loading:', showLoading);
     
     // Get session ID from URL if available
     const urlParams = new URLSearchParams(window.location.search);
     const sessionId = urlParams.get('session_id');
     
-    // Show loading indicator
-    if (planStatusEl) {
+    // Show loading indicator only if requested
+    if (showLoading && planStatusEl) {
       planStatusEl.textContent = 'Activating...';
     }
     
@@ -215,16 +217,27 @@ async function pollForLicenseActivation() {
     
     // License not found yet
     console.log('[Focus Nudge] ❌ License not found after polling');
-    if (planStatusEl) {
+    if (planStatusEl && showLoading) {
       planStatusEl.textContent = 'Basic';
     }
-    alert(`Payment received, but license not found yet.\n\nYour userId: ${userId}\n\nPlease:\n1. Wait 10-20 seconds for webhook to process\n2. Click "Check for License" button\n3. Or refresh this page`);
+    
+    // Only show alert if we were showing loading (user initiated check or has payment indicators)
+    if (showLoading) {
+      alert(`Payment received, but license not found yet.\n\nYour userId: ${userId}\n\nPlease:\n1. Wait 10-20 seconds for webhook to process\n2. Click "Check for License" button\n3. Or refresh this page`);
+    } else {
+      // Silent check failed - just log it
+      console.log('[Focus Nudge] Silent license check: No license found (this is OK if payment not completed)');
+    }
   } catch (error) {
     console.error('[Focus Nudge] License activation error:', error);
-    if (planStatusEl) {
+    if (planStatusEl && showLoading) {
       planStatusEl.textContent = 'Basic';
     }
-    alert('Payment received, but license activation failed. Please contact support.');
+    
+    // Only show alert if we were showing loading
+    if (showLoading) {
+      alert('Payment received, but license activation failed. Please contact support.');
+    }
   }
 }
 
@@ -392,12 +405,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (sessionId || paymentSuccess) {
       // Has payment indicators, check for license activation with loading
       console.log('[Focus Nudge] Payment detected, checking for license activation...');
-      await checkLicenseActivation();
+      await checkLicenseActivation(true); // Force check with loading
     } else {
       // No payment indicators, but check once anyway (webhook might have fired)
+      // This will check silently (no loading indicator, no alerts)
       console.log('[Focus Nudge] No payment indicators, checking silently for license...');
       checkLicenseActivation(false).catch((err) => {
-        console.log('[Focus Nudge] Silent license check failed (this is OK):', err);
+        console.log('[Focus Nudge] Silent license check error (this is OK):', err);
       });
     }
   } else {
