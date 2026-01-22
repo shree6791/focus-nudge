@@ -19,7 +19,7 @@ A browser extension that provides playful nudges when you drift into endless scr
 - Fixed cooldown: 30 minutes
 - Weekly summary included
 
-### Pro ($9.99/month)
+### Pro ($0.99/month)
 - Customizable tone: Gentle / Motivational / Sarcastic
 - Customizable drift threshold: 1-120 minutes
 - Customizable cooldown: 1-120 minutes

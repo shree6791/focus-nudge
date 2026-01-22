@@ -16,7 +16,7 @@ const PORT = process.env.PORT || 3000;
 
 // Constants
 const BACKEND_URL = process.env.BACKEND_URL || 'https://focus-nudge-extension.onrender.com';
-const SUBSCRIPTION_PRICE_CENTS = 999; // $9.99
+const SUBSCRIPTION_PRICE_CENTS = 99; // $0.99
 const SUBSCRIPTION_INTERVAL = 'month';
 
 // Middleware

@@ -108,7 +108,7 @@ async function handleUpgrade() {
     console.error('Checkout error:', error);
     alert('Error starting checkout: ' + error.message);
     upgradeButton.disabled = false;
-    upgradeButton.textContent = 'Upgrade to Pro - $9.99/month';
+    upgradeButton.textContent = 'Upgrade to Pro - $0.99/month';
   }
 }
 
