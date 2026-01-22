@@ -23,6 +23,7 @@ const clearDevPlanBtn = document.getElementById('clearDevPlan');
 const debugSection = document.getElementById('debugSection');
 const debugUserIdEl = document.getElementById('debugUserId');
 const copyUserIdBtn = document.getElementById('copyUserId');
+const checkLicenseBtn = document.getElementById('checkLicenseBtn');
 
 // Load and display current state
 async function loadState() {
@@ -145,82 +146,80 @@ async function handleManageSubscription() {
 }
 
 
-// Check for Stripe redirect (after checkout)
-async function handleStripeRedirect() {
+// Check for license activation (after payment or on page load)
+async function checkLicenseActivation(forceCheck = false) {
+  // Check if we're currently Basic but might have a license now
+  const plan = await getPlan();
+  
+  // If already Pro, no need to check
+  if (plan.isPro && !forceCheck) {
+    return;
+  }
+  
+  // Check URL params for payment success indicator
   const urlParams = new URLSearchParams(window.location.search);
   const sessionId = urlParams.get('session_id');
   const paymentSuccess = urlParams.get('payment_success');
   
-  // Also check localStorage for payment success (set by success page)
-  let storedSessionId = null;
-  try {
-    const stored = localStorage.getItem('focusNudgePaymentSuccess');
-    const storedTime = localStorage.getItem('focusNudgePaymentTime');
-    if (stored && storedTime) {
-      const timeDiff = Date.now() - parseInt(storedTime);
-      // Only use if less than 5 minutes old
-      if (timeDiff < 5 * 60 * 1000) {
-        storedSessionId = stored;
-        // Clear it after using
-        localStorage.removeItem('focusNudgePaymentSuccess');
-        localStorage.removeItem('focusNudgePaymentTime');
-      }
-    }
-  } catch(e) {
-    // localStorage not available, continue
+  // If no payment indicators and we're Basic, and not forced, don't poll
+  // But if we're Basic, always check once (webhook might have fired)
+  if (!sessionId && !paymentSuccess && !forceCheck && plan.isPro) {
+    return;
   }
   
-  if (sessionId || paymentSuccess || storedSessionId) {
-    const actualSessionId = sessionId || storedSessionId;
-    // Checkout completed - get license key from backend
-    try {
-      const userId = await getUserId();
-      const apiUrl = getApiBaseUrl();
-      
-      // Poll for license key (webhook might take a moment)
-      let attempts = 0;
-      const maxAttempts = 20; // Increased to 20 seconds (webhook can be slow)
-      
-      // Show loading indicator
-      if (planStatusEl) {
-        planStatusEl.textContent = 'Activating...';
-      }
-      
-      while (attempts < maxAttempts) {
-        const response = await fetch(`${apiUrl}/api/get-license?userId=${encodeURIComponent(userId)}`);
-        
-        if (response.ok) {
-          const { licenseKey } = await response.json();
-          
-          // Store license key
-          await setLicenseKey(licenseKey);
-          
-          // Reload state to show Pro
-          await loadState();
-          
-          // Show success message
-          alert('✅ Payment successful! Pro features are now active.');
-          
-          // Clean URL
-          window.history.replaceState({}, document.title, window.location.pathname);
-          return;
-        }
-        
-        // Wait before retrying
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        attempts++;
-      }
-      
-      // If we get here, license wasn't found
-      if (planStatusEl) {
-        planStatusEl.textContent = 'Basic';
-      }
-      alert('Payment received, but license activation is pending. The webhook may take a few moments. Please refresh this page in 10-20 seconds, or use the manual license creation method.');
-    } catch (error) {
-      console.error('License activation error:', error);
-      alert('Payment received, but license activation failed. Please contact support.');
+  // Payment was made OR we're checking manually - poll for license activation
+  // Poll for license key (webhook might take a moment)
+  try {
+    const userId = await getUserId();
+    const apiUrl = getApiBaseUrl();
+    
+    let attempts = 0;
+    const maxAttempts = 20; // Poll for up to 20 seconds
+    
+    // Show loading indicator
+    if (planStatusEl) {
+      planStatusEl.textContent = 'Activating...';
     }
+    
+    while (attempts < maxAttempts) {
+      const response = await fetch(`${apiUrl}/api/get-license?userId=${encodeURIComponent(userId)}`);
+      
+      if (response.ok) {
+        const { licenseKey } = await response.json();
+        
+        // Store license key
+        await setLicenseKey(licenseKey);
+        
+        // Reload state to show Pro
+        await loadState();
+        
+        // Show success message
+        alert('✅ Payment successful! Pro features are now active.');
+        
+        // Clean URL
+        window.history.replaceState({}, document.title, window.location.pathname);
+        return;
+      }
+      
+      // Wait before retrying
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      attempts++;
+    }
+    
+    // If we get here, license wasn't found yet
+    if (planStatusEl) {
+      planStatusEl.textContent = 'Basic';
+    }
+    alert('Payment received, but license activation is pending. The webhook may take a few moments. Please refresh this page in 10-20 seconds, or use the manual license creation method if needed.');
+  } catch (error) {
+    console.error('License activation error:', error);
+    alert('Payment received, but license activation failed. Please contact support or use the manual license creation method.');
   }
+}
+
+// Legacy function name for compatibility
+async function handleStripeRedirect() {
+  await checkLicenseActivation();
 }
 
 async function loadWeeklySummary() {
@@ -315,13 +314,38 @@ if (copyUserIdBtn) {
   });
 }
 
+// Check License button
+if (checkLicenseBtn) {
+  checkLicenseBtn.addEventListener('click', async () => {
+    checkLicenseBtn.disabled = true;
+    checkLicenseBtn.textContent = 'Checking...';
+    await checkLicenseActivation(true); // Force check
+    checkLicenseBtn.disabled = false;
+    checkLicenseBtn.textContent = 'Check for License';
+  });
+}
+
 // Event listeners
 upgradeButton.addEventListener('click', handleUpgrade);
 manageButton.addEventListener('click', handleManageSubscription);
 
 // Initialize on load
 document.addEventListener('DOMContentLoaded', async () => {
-  await handleStripeRedirect(); // Check for Stripe redirect
-  await loadState();
+  await loadState(); // Load current state first
+  
+  // Always check for license activation if Basic (webhook might have fired)
+  const plan = await getPlan();
+  if (!plan.isPro) {
+    // Check once silently (don't show loading if no payment indicators)
+    const urlParams = new URLSearchParams(window.location.search);
+    if (!urlParams.get('session_id') && !urlParams.get('payment_success')) {
+      // No payment indicators, but check once anyway (webhook might have fired)
+      checkLicenseActivation(false).catch(() => {}); // Silent check, don't show errors
+    } else {
+      // Has payment indicators, show loading
+      await checkLicenseActivation();
+    }
+  }
+  
   await checkDebugSection(); // Show debug tools if needed
 });
