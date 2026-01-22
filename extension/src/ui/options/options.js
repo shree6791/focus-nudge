@@ -1,5 +1,10 @@
 // Options page: Plan settings, Pro settings, Weekly summary
 
+// Constants
+const POLLING_INTERVAL_MS = 1000; // 1 second between polling attempts
+const MAX_POLLING_ATTEMPTS = 15; // Poll for up to 15 seconds
+const SAVE_CONFIRMATION_DURATION_MS = 300;
+
 // DOM elements
 const planStatusEl = document.getElementById('planStatus');
 const proSettings = document.getElementById('proSettings');
@@ -8,18 +13,15 @@ const driftThresholdInput = document.getElementById('driftThreshold');
 const cooldownInput = document.getElementById('cooldown');
 const weeklySummaryEl = document.getElementById('weeklySummary');
 const resetSummaryBtn = document.getElementById('resetSummary');
+const upgradeSection = document.getElementById('upgradeSection');
+const upgradeButton = document.getElementById('upgradeButton');
+const manageSubscriptionSection = document.getElementById('manageSubscriptionSection');
+const manageButton = document.getElementById('manageButton');
 
 // Extract from global scope (loaded via script tags)
 const { getPlan, getEffectiveSettings, setLicenseKey, getApiBaseUrl, getUserId, getLicenseKey } = self.FocusNudgePlan;
 const { getWeeklySummary, resetWeeklySummary } = self.FocusNudgeMetrics;
 const { getSettings, saveSettings } = self.FocusNudgeSettings;
-
-// DOM elements for Stripe
-const upgradeSection = document.getElementById('upgradeSection');
-const upgradeButton = document.getElementById('upgradeButton');
-const manageSubscriptionSection = document.getElementById('manageSubscriptionSection');
-const manageButton = document.getElementById('manageButton');
-const checkLicenseBtn = document.getElementById('checkLicenseBtn');
 
 // Load and display current state
 async function loadState() {
@@ -47,9 +49,6 @@ async function loadState() {
   // Load effective settings
   const effectiveSettings = await getEffectiveSettings();
   
-  // Load user settings (for Pro)
-  const userSettings = await getSettings();
-  
   // Update UI
   toneSelect.value = effectiveSettings.tone;
   driftThresholdInput.value = effectiveSettings.drift_threshold_min;
@@ -74,10 +73,6 @@ async function handleUpgrade() {
 
     const userId = await getUserId();
     const apiUrl = getApiBaseUrl();
-    // Don't send chrome-extension URL - backend will use web URL instead
-    // const returnUrl = chrome.runtime.getURL('src/ui/options/options.html');
-
-    // Get extension ID for redirect
     const extensionId = chrome.runtime.id;
     const extensionOptionsUrl = chrome.runtime.getURL('src/ui/options/options.html');
     
@@ -100,13 +95,11 @@ async function handleUpgrade() {
 
     const { sessionId, url } = await response.json();
 
-    // Redirect directly to Stripe Checkout URL
-    // (Manifest V3 doesn't allow external scripts, so we use direct redirect)
-    if (url) {
-      window.location.href = url;
-    } else {
+    // Redirect to Stripe Checkout
+    if (!url) {
       throw new Error('No checkout URL received from server');
     }
+    window.location.href = url;
   } catch (error) {
     console.error('Checkout error:', error);
     alert('Error starting checkout: ' + error.message);
@@ -183,10 +176,10 @@ async function pollForLicenseActivation(showLoading = true) {
     const userId = await getUserId();
     const apiUrl = getApiBaseUrl();
     
-    console.log('[Focus Nudge] Starting license activation check...');
-    console.log('[Focus Nudge] Current userId:', userId);
-    console.log('[Focus Nudge] API URL:', apiUrl);
-    console.log('[Focus Nudge] Show loading:', showLoading);
+    // Log activation attempt (reduced logging for production)
+    if (showLoading) {
+      console.log('[Focus Nudge] Checking for license activation...', { userId, apiUrl });
+    }
     
     // Get session ID from URL if available
     const urlParams = new URLSearchParams(window.location.search);
@@ -197,40 +190,31 @@ async function pollForLicenseActivation(showLoading = true) {
       planStatusEl.textContent = 'Activating...';
     }
     
-    // First, try waiting for webhook (faster if it works)
-    // Increase polling time since webhook might take a moment
-    const licenseKey = await pollForLicense(userId, apiUrl, 15); // 15 seconds for webhook
+    // Poll for license (webhook might take a moment)
+    const licenseKey = await pollForLicense(userId, apiUrl, MAX_POLLING_ATTEMPTS);
     
     if (licenseKey) {
-      console.log('[Focus Nudge] ✅ License key received:', licenseKey);
       await activateLicense(licenseKey);
       return;
     }
     
     // Webhook didn't fire - try auto-create fallback (if we have sessionId)
-    if (sessionId && sessionId.startsWith('cs_')) {
-      console.log('[Focus Nudge] Webhook delayed, trying auto-create fallback...');
+    if (sessionId?.startsWith('cs_')) {
       const fallbackLicenseKey = await tryAutoCreateLicense(userId, sessionId, apiUrl);
-      
       if (fallbackLicenseKey) {
-        console.log('[Focus Nudge] ✅ License created via fallback:', fallbackLicenseKey);
         await activateLicense(fallbackLicenseKey);
         return;
       }
     }
     
-    // License not found yet
-    console.log('[Focus Nudge] ❌ License not found after polling');
+    // License not found - reset status if showing loading
     if (planStatusEl && showLoading) {
       planStatusEl.textContent = 'Basic';
     }
     
-    // Only show alert if we were showing loading (user initiated check or has payment indicators)
+    // Show alert only if user has payment indicators
     if (showLoading) {
-      alert(`Payment received, but license not found yet.\n\nYour userId: ${userId}\n\nPlease:\n1. Wait 10-20 seconds for webhook to process\n2. Click "Check for License" button\n3. Or refresh this page`);
-    } else {
-      // Silent check failed - just log it
-      console.log('[Focus Nudge] Silent license check: No license found (this is OK if payment not completed)');
+      alert('Payment received, but license activation is pending.\n\nPlease wait 10-20 seconds for the webhook to process, then refresh this page. Your Pro features will activate automatically.');
     }
   } catch (error) {
     console.error('[Focus Nudge] License activation error:', error);
@@ -252,35 +236,31 @@ async function pollForLicenseActivation(showLoading = true) {
  * @param {number} maxAttempts - Maximum polling attempts
  * @returns {Promise<string|null>} License key if found, null otherwise
  */
-async function pollForLicense(userId, apiUrl, maxAttempts = 10) {
-  console.log(`[Focus Nudge] Polling for license - userId: ${userId}, maxAttempts: ${maxAttempts}`);
+async function pollForLicense(userId, apiUrl, maxAttempts = MAX_POLLING_ATTEMPTS) {
+  const url = `${apiUrl}/api/get-license?userId=${encodeURIComponent(userId)}`;
   
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
-      const url = `${apiUrl}/api/get-license?userId=${encodeURIComponent(userId)}`;
-      console.log(`[Focus Nudge] Poll attempt ${attempt + 1}/${maxAttempts}: ${url}`);
-      
       const response = await fetch(url);
       
       if (response.ok) {
-        const data = await response.json();
-        console.log(`[Focus Nudge] ✅ License found!`, data);
-        return data.licenseKey;
-      } else {
-        const errorText = await response.text();
-        console.log(`[Focus Nudge] Poll attempt ${attempt + 1} failed: ${response.status} - ${errorText}`);
+        const { licenseKey } = await response.json();
+        console.log('[Focus Nudge] ✅ License found');
+        return licenseKey;
       }
     } catch (error) {
-      console.warn(`[Focus Nudge] Poll attempt ${attempt + 1} error:`, error);
+      // Only log errors on last attempt to reduce console noise
+      if (attempt === maxAttempts - 1) {
+        console.warn('[Focus Nudge] License polling error:', error);
+      }
     }
     
     // Wait before retrying (except on last attempt)
     if (attempt < maxAttempts - 1) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await new Promise(resolve => setTimeout(resolve, POLLING_INTERVAL_MS));
     }
   }
   
-  console.log(`[Focus Nudge] ❌ License not found after ${maxAttempts} attempts`);
   return null;
 }
 
@@ -335,44 +315,53 @@ async function loadWeeklySummary() {
   `;
 }
 
-// Event listeners
-
-// Helper function to show save confirmation
+/**
+ * Show visual confirmation when setting is saved
+ * @param {HTMLElement} element - Element to highlight
+ */
 function showSaveConfirmation(element) {
   const originalBg = element.style.backgroundColor;
   element.style.backgroundColor = '#4CAF50';
   element.style.transition = 'background-color 0.3s';
   setTimeout(() => {
     element.style.backgroundColor = originalBg;
-  }, 300);
+  }, SAVE_CONFIRMATION_DURATION_MS);
 }
 
-toneSelect.addEventListener('change', async (e) => {
+/**
+ * Save setting with validation and visual feedback
+ * @param {string} key - Setting key
+ * @param {number|string} value - Setting value
+ * @param {HTMLElement} element - Input element
+ * @param {number} min - Minimum value (for numbers)
+ * @param {number} max - Maximum value (for numbers)
+ */
+async function saveSetting(key, value, element, min = null, max = null) {
+  let finalValue = value;
+  
+  // Validate and clamp numeric values
+  if (typeof value === 'number' && min !== null && max !== null) {
+    finalValue = Math.max(min, Math.min(max, value));
+    element.value = finalValue;
+  }
+  
   const settings = await getSettings();
-  settings.tone = e.target.value;
+  settings[key] = finalValue;
   await saveSettings(settings);
-  showSaveConfirmation(e.target);
-  console.log('[Focus Nudge] Settings saved: tone =', e.target.value);
+  showSaveConfirmation(element);
+}
+
+// Settings event listeners
+toneSelect.addEventListener('change', async (e) => {
+  await saveSetting('tone', e.target.value, e.target);
 });
 
 driftThresholdInput.addEventListener('change', async (e) => {
-  const value = Math.max(1, Math.min(120, parseInt(e.target.value) || 15));
-  e.target.value = value;
-  const settings = await getSettings();
-  settings.drift_threshold_min = value;
-  await saveSettings(settings);
-  showSaveConfirmation(e.target);
-  console.log('[Focus Nudge] Settings saved: drift_threshold_min =', value);
+  await saveSetting('drift_threshold_min', parseInt(e.target.value) || 15, e.target, 1, 120);
 });
 
 cooldownInput.addEventListener('change', async (e) => {
-  const value = Math.max(1, Math.min(120, parseInt(e.target.value) || 10));
-  e.target.value = value;
-  const settings = await getSettings();
-  settings.cooldown_min = value;
-  await saveSettings(settings);
-  showSaveConfirmation(e.target);
-  console.log('[Focus Nudge] Settings saved: cooldown_min =', value);
+  await saveSetting('cooldown_min', parseInt(e.target.value) || 10, e.target, 1, 120);
 });
 
 resetSummaryBtn.addEventListener('click', async () => {
@@ -383,30 +372,9 @@ resetSummaryBtn.addEventListener('click', async () => {
 });
 
 
-// Event listeners
+// Stripe action listeners
 upgradeButton.addEventListener('click', handleUpgrade);
 manageButton.addEventListener('click', handleManageSubscription);
-
-// Check License button (for manual activation after payment)
-if (checkLicenseBtn) {
-  checkLicenseBtn.addEventListener('click', async () => {
-    checkLicenseBtn.disabled = true;
-    checkLicenseBtn.textContent = 'Checking...';
-    
-    try {
-      const userId = await getUserId();
-      console.log('[Focus Nudge] Manual license check - userId:', userId);
-      await checkLicenseActivation(true); // Force check
-    } catch (error) {
-      console.error('[Focus Nudge] Manual license check error:', error);
-      alert('Error checking for license: ' + error.message);
-    } finally {
-      checkLicenseBtn.disabled = false;
-      checkLicenseBtn.textContent = 'Check for License';
-    }
-  });
-}
-
 
 // Initialize on load
 document.addEventListener('DOMContentLoaded', async () => {
@@ -420,22 +388,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     const sessionId = urlParams.get('session_id');
     const paymentSuccess = urlParams.get('payment_success');
     
-    console.log('[Focus Nudge] Options page loaded. Plan:', plan);
-    console.log('[Focus Nudge] URL params - session_id:', sessionId, 'payment_success:', paymentSuccess);
-    
+    // Check for payment indicators in URL
     if (sessionId || paymentSuccess) {
-      // Has payment indicators, check for license activation with loading
-      console.log('[Focus Nudge] Payment detected, checking for license activation...');
-      await checkLicenseActivation(true); // Force check with loading
+      // Has payment indicators - check with loading indicator
+      await checkLicenseActivation(true);
     } else {
-      // No payment indicators, but check once anyway (webhook might have fired)
-      // This will check silently (no loading indicator, no alerts)
-      console.log('[Focus Nudge] No payment indicators, checking silently for license...');
-      checkLicenseActivation(false).catch((err) => {
-        console.log('[Focus Nudge] Silent license check error (this is OK):', err);
+      // No payment indicators - check silently (webhook might have fired)
+      checkLicenseActivation(false).catch(() => {
+        // Silent check failed - this is OK if payment not completed
       });
     }
-  } else {
-    console.log('[Focus Nudge] Already Pro, skipping license check');
   }
 });
