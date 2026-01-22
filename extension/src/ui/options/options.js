@@ -77,6 +77,10 @@ async function handleUpgrade() {
     // Don't send chrome-extension URL - backend will use web URL instead
     // const returnUrl = chrome.runtime.getURL('src/ui/options/options.html');
 
+    // Get extension ID for redirect
+    const extensionId = chrome.runtime.id;
+    const extensionOptionsUrl = chrome.runtime.getURL('src/ui/options/options.html');
+    
     // Create checkout session
     const response = await fetch(`${apiUrl}/api/create-checkout-session`, {
       method: 'POST',
@@ -84,8 +88,9 @@ async function handleUpgrade() {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        userId: userId
-        // returnUrl removed - backend handles success URL
+        userId: userId,
+        extensionId: extensionId,
+        extensionOptionsUrl: extensionOptionsUrl
       })
     });
 
@@ -148,26 +153,22 @@ async function handleManageSubscription() {
 
 // Check for license activation (after payment or on page load)
 async function checkLicenseActivation(forceCheck = false) {
-  // Check if we're currently Basic but might have a license now
   const plan = await getPlan();
   
-  // If already Pro, no need to check
+  // If already Pro and not forced, skip
   if (plan.isPro && !forceCheck) {
     return;
   }
   
-  // Check URL params for payment success indicator
+  // Check for session ID in URL (from Stripe redirect)
   const urlParams = new URLSearchParams(window.location.search);
   const sessionId = urlParams.get('session_id');
-  const paymentSuccess = urlParams.get('payment_success');
   
-  // If no payment indicators and we're Basic, and not forced, don't poll
-  // But if we're Basic, always check once (webhook might have fired)
-  if (!sessionId && !paymentSuccess && !forceCheck && plan.isPro) {
+  // Only poll if we have a session ID or are forcing a check
+  if (!sessionId && !forceCheck) {
     return;
   }
   
-  // Payment was made OR we're checking manually - poll for license activation
   await pollForLicenseActivation();
 }
 
@@ -290,10 +291,6 @@ async function activateLicense(licenseKey) {
   window.history.replaceState({}, document.title, window.location.pathname);
 }
 
-// Legacy function name for compatibility
-async function handleStripeRedirect() {
-  await checkLicenseActivation();
-}
 
 async function loadWeeklySummary() {
   const summary = await getWeeklySummary();

@@ -93,22 +93,21 @@ app.get('/api/verify-license', async (req, res) => {
  */
 app.post('/api/create-checkout-session', async (req, res) => {
   try {
-    const { userId, returnUrl } = req.body;
+    const { userId, extensionId, extensionOptionsUrl } = req.body;
 
     if (!userId) {
       return res.status(400).json({ error: 'Missing userId' });
     }
 
-    // Stripe can't redirect to chrome-extension:// URLs
-    // Always use web-accessible success page on our backend
+    // Stripe can't redirect to chrome-extension:// URLs directly
+    // Use web-accessible success page that will redirect to extension
     const safeBaseUrl = BACKEND_URL.includes('chrome-extension') 
       ? 'https://focus-nudge-extension.onrender.com' 
       : BACKEND_URL;
     
-    const successUrl = `${safeBaseUrl}/success?session_id={CHECKOUT_SESSION_ID}&userId=${encodeURIComponent(userId)}`;
-    const cancelUrl = (returnUrl && returnUrl.startsWith('http') && !returnUrl.includes('chrome-extension'))
-      ? returnUrl 
-      : `${safeBaseUrl}/cancel`;
+    // Include extension info in success URL for proper redirect
+    const successUrl = `${safeBaseUrl}/success?session_id={CHECKOUT_SESSION_ID}&userId=${encodeURIComponent(userId)}${extensionId ? `&extId=${encodeURIComponent(extensionId)}` : ''}${extensionOptionsUrl ? `&extUrl=${encodeURIComponent(extensionOptionsUrl)}` : ''}`;
+    const cancelUrl = `${safeBaseUrl}/cancel`;
     
     console.log(`[CHECKOUT] Creating session for userId: ${userId}`);
 
@@ -366,10 +365,18 @@ app.get('/api/config', (req, res) => {
 
 /**
  * Success page (after Stripe checkout)
- * Shows success message and instructions to return to extension
+ * Automatically redirects to extension options page
  */
 app.get('/success', (req, res) => {
-  const { session_id, userId } = req.query;
+  const { session_id, userId, extId, extUrl } = req.query;
+  
+  // Build extension options URL with payment success params
+  const extensionOptionsUrl = extUrl 
+    ? `${extUrl}?payment_success=1&session_id=${session_id || ''}&userId=${encodeURIComponent(userId || '')}`
+    : (extId 
+      ? `chrome-extension://${extId}/src/ui/options/options.html?payment_success=1&session_id=${session_id || ''}&userId=${encodeURIComponent(userId || '')}`
+      : null);
+  
   res.send(`
     <!DOCTYPE html>
     <html>
@@ -384,18 +391,46 @@ app.get('/success', (req, res) => {
           align-items: center;
           min-height: 100vh;
           margin: 0;
-          background: #f5f5f5;
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         }
         .container {
           background: white;
           padding: 40px;
-          border-radius: 8px;
-          box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+          border-radius: 12px;
+          box-shadow: 0 10px 40px rgba(0,0,0,0.2);
           text-align: center;
           max-width: 500px;
+          animation: slideIn 0.3s ease-out;
         }
-        h1 { color: #4CAF50; margin: 0 0 20px 0; }
-        p { color: #666; line-height: 1.6; }
+        @keyframes slideIn {
+          from {
+            opacity: 0;
+            transform: translateY(-20px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+        h1 { 
+          color: #4CAF50; 
+          margin: 0 0 20px 0; 
+          font-size: 28px;
+        }
+        .success-icon {
+          font-size: 64px;
+          margin-bottom: 20px;
+        }
+        p { 
+          color: #666; 
+          line-height: 1.6; 
+          margin: 10px 0;
+        }
+        .redirect-message {
+          color: #999;
+          font-size: 14px;
+          margin-top: 30px;
+        }
         .button {
           display: inline-block;
           margin-top: 20px;
@@ -403,37 +438,90 @@ app.get('/success', (req, res) => {
           background: #4CAF50;
           color: white;
           text-decoration: none;
-          border-radius: 4px;
+          border-radius: 6px;
           font-weight: 600;
+          transition: background 0.2s;
+          cursor: pointer;
+          border: none;
         }
-        .button:hover { background: #45a049; }
+        .button:hover { 
+          background: #45a049; 
+        }
+        .spinner {
+          display: inline-block;
+          width: 16px;
+          height: 16px;
+          border: 2px solid #f3f3f3;
+          border-top: 2px solid #4CAF50;
+          border-radius: 50%;
+          animation: spin 1s linear infinite;
+          margin-left: 10px;
+        }
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
       </style>
     </head>
     <body>
       <div class="container">
-        <h1>✅ Payment Successful!</h1>
-        <p>Your Focus Nudge Pro subscription is now active.</p>
-        <p><strong>Next steps:</strong></p>
-        <ol style="text-align: left; max-width: 400px; margin: 20px auto;">
-          <li>Return to the Focus Nudge extension</li>
-          <li>Open the Options page (right-click extension icon → Options)</li>
-          <li>Refresh the page if needed</li>
-          <li>You should now see "Pro" status!</li>
-        </ol>
-        <p style="font-size: 14px; color: #999; margin-top: 30px;">
-          The license will be activated automatically. If you don't see Pro status, wait 10-20 seconds and refresh the options page.
+        <div class="success-icon">✅</div>
+        <h1>Payment Successful!</h1>
+        <p><strong>Your Focus Nudge Pro subscription is now active.</strong></p>
+        ${extensionOptionsUrl ? `
+        <p class="redirect-message">
+          Redirecting to extension options...<span class="spinner"></span>
         </p>
+        <button class="button" id="openExtensionBtn">
+          Open Extension Options
+        </button>
+        ` : `
+        <p>Please return to the extension and open the Options page to activate your Pro features.</p>
+        `}
       </div>
       <script>
-        // Don't try to redirect to chrome-extension URL (doesn't work)
-        // Instead, show instructions and let user manually return to extension
-        console.log('Payment successful. Session ID:', '${session_id || ''}');
+        ${extensionOptionsUrl ? `
+        // Try to open extension options page
+        const extensionUrl = ${JSON.stringify(extensionOptionsUrl)};
         
-        // Store success flag in localStorage as backup (extension can check this)
+        function openExtensionOptions() {
+          // Try to navigate to extension URL
+          try {
+            window.location.href = extensionUrl;
+          } catch (e) {
+            // Fallback: try opening in new tab
+            try {
+              const link = document.createElement('a');
+              link.href = extensionUrl;
+              link.target = '_blank';
+              link.click();
+            } catch (e2) {
+              console.warn('Could not open extension URL:', e2);
+              // Last resort: show instructions
+              document.querySelector('.redirect-message').textContent = 'Click the button below to open the extension options page.';
+            }
+          }
+        }
+        
+        // Auto-redirect after short delay
+        setTimeout(openExtensionOptions, 1000);
+        
+        // Also handle button click
+        const btn = document.getElementById('openExtensionBtn');
+        if (btn) {
+          btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            openExtensionOptions();
+          });
+        }
+        ` : ''}
+        
+        // Store payment info for extension to pick up
         if ('${session_id || ''}') {
           try {
             localStorage.setItem('focusNudgePaymentSuccess', '${session_id || ''}');
             localStorage.setItem('focusNudgePaymentTime', Date.now().toString());
+            localStorage.setItem('focusNudgePaymentUserId', '${userId || ''}');
           } catch(e) {
             console.warn('Could not store payment success in localStorage');
           }
