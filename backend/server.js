@@ -94,10 +94,32 @@ app.post('/api/create-checkout-session', async (req, res) => {
 
     // Stripe can't redirect to chrome-extension:// URLs
     // Always use web-accessible success page on our backend
-    const baseUrl = process.env.BACKEND_URL || req.headers.origin || 'https://focus-nudge-extension.onrender.com';
-    const successUrl = `${baseUrl}/success?session_id={CHECKOUT_SESSION_ID}&userId=${encodeURIComponent(userId)}`;
-    // Cancel URL - only use web URLs, ignore chrome-extension URLs
-    const cancelUrl = (returnUrl && returnUrl.startsWith('http')) ? returnUrl : `${baseUrl}/cancel`;
+    // NEVER use req.headers.origin as it might be chrome-extension://
+    let baseUrl = process.env.BACKEND_URL || 'https://focus-nudge-extension.onrender.com';
+    
+    // Explicitly reject chrome-extension URLs
+    if (baseUrl.includes('chrome-extension')) {
+      console.warn('[CHECKOUT] Rejected chrome-extension URL, using default');
+      baseUrl = 'https://focus-nudge-extension.onrender.com';
+    }
+    
+    // Ensure baseUrl is a valid HTTP/HTTPS URL (never chrome-extension)
+    const safeBaseUrl = baseUrl.startsWith('http') && !baseUrl.includes('chrome-extension') 
+      ? baseUrl 
+      : 'https://focus-nudge-extension.onrender.com';
+    
+    const successUrl = `${safeBaseUrl}/success?session_id={CHECKOUT_SESSION_ID}&userId=${encodeURIComponent(userId)}`;
+    
+    // Cancel URL - explicitly reject chrome-extension URLs
+    let cancelUrl = `${safeBaseUrl}/cancel`;
+    if (returnUrl && returnUrl.startsWith('http') && !returnUrl.includes('chrome-extension')) {
+      cancelUrl = returnUrl;
+    }
+    
+    console.log(`[CHECKOUT] Creating session for userId: ${userId}`);
+    console.log(`[CHECKOUT] Success URL: ${successUrl}`);
+    console.log(`[CHECKOUT] Cancel URL: ${cancelUrl}`);
+    console.log(`[CHECKOUT] Received returnUrl: ${returnUrl || 'none'}`);
 
     // Create Stripe Checkout Session
     const session = await stripe.checkout.sessions.create({
