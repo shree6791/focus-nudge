@@ -16,8 +16,8 @@
     cooldown_min: 30
   };
 
-  // Backend API URL (configure in manifest or environment)
-  const API_BASE_URL = 'https://your-backend-domain.com'; // TODO: Update with your backend URL
+  // Backend API URL
+  const API_BASE_URL = 'https://focus-nudge-extension.onrender.com';
   const LICENSE_CACHE_MS = 5 * 60 * 1000; // Cache license check for 5 minutes
 
   /**

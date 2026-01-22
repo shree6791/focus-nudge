@@ -24,7 +24,7 @@ const { getSettings, saveSettings } = self.FocusNudgeSettings;
 
 // Stripe configuration (get from backend or manifest)
 let stripe = null;
-let stripePublishableKey = null;
+let stripePublishableKey = null; // Will be set in initStripe()
 
 // DOM elements for Stripe
 const upgradeSection = document.getElementById('upgradeSection');
@@ -35,14 +35,26 @@ const manageButton = document.getElementById('manageButton');
 // Initialize Stripe
 async function initStripe() {
   try {
-    // Get publishable key from backend (or store in manifest)
+    // Fetch publishable key from backend (reads from environment variables)
     const apiUrl = getApiBaseUrl();
-    // For now, you'll need to set this in the extension
-    // TODO: Add API endpoint to get publishable key, or store in manifest
-    stripePublishableKey = 'pk_test_...'; // TODO: Replace with your Stripe publishable key
     
-    if (stripePublishableKey && stripePublishableKey !== 'pk_test_...') {
+    try {
+      const response = await fetch(`${apiUrl}/api/config`);
+      if (response.ok) {
+        const config = await response.json();
+        stripePublishableKey = config.stripePublishableKey;
+      } else {
+        console.warn('[Focus Nudge] Failed to fetch Stripe config from backend');
+      }
+    } catch (fetchError) {
+      console.warn('[Focus Nudge] Error fetching Stripe config:', fetchError);
+    }
+    
+    if (stripePublishableKey && stripePublishableKey.startsWith('pk_')) {
       stripe = Stripe(stripePublishableKey);
+      console.log('[Focus Nudge] Stripe initialized successfully');
+    } else {
+      console.warn('[Focus Nudge] Stripe publishable key not configured. Payment features will not work.');
     }
   } catch (error) {
     console.error('Stripe initialization error:', error);

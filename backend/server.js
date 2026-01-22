@@ -226,6 +226,27 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
   }
 });
 
+/**
+ * Get public configuration (publishable key)
+ * GET /api/config
+ */
+app.get('/api/config', (req, res) => {
+  try {
+    const publishableKey = process.env.STRIPE_PUBLISHABLE_KEY;
+    
+    if (!publishableKey) {
+      return res.status(500).json({ error: 'Stripe publishable key not configured' });
+    }
+
+    res.json({ 
+      stripePublishableKey: publishableKey 
+    });
+  } catch (error) {
+    console.error('Config error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
