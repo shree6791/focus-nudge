@@ -468,50 +468,52 @@ app.get('/success', (req, res) => {
         <div class="success-icon">✅</div>
         <h1>Payment Successful!</h1>
         <p><strong>Your Focus Nudge Pro subscription is now active.</strong></p>
-        ${extensionOptionsUrl ? `
         <p class="redirect-message">
-          Redirecting to extension options...<span class="spinner"></span>
+          <strong>Next step:</strong> Open the Focus Nudge extension options page to activate your Pro features.
         </p>
+        <ol style="text-align: left; max-width: 400px; margin: 20px auto; color: #666;">
+          <li>Right-click the Focus Nudge extension icon in your browser toolbar</li>
+          <li>Click "Options" from the menu</li>
+          <li>Your Pro features will activate automatically!</li>
+        </ol>
+        ${extensionOptionsUrl ? `
         <button class="button" id="openExtensionBtn">
-          Open Extension Options
+          Try Opening Extension Options
         </button>
-        ` : `
-        <p>Please return to the extension and open the Options page to activate your Pro features.</p>
-        `}
+        <p style="font-size: 12px; color: #999; margin-top: 10px;">
+          If the button doesn't work, use the steps above.
+        </p>
+        ` : ''}
       </div>
       <script>
         ${extensionOptionsUrl ? `
-        // Try to open extension options page
+        // Chrome blocks chrome-extension:// URLs from web pages for security
+        // So we can't auto-redirect, but we can try to open it on button click
         const extensionUrl = ${JSON.stringify(extensionOptionsUrl)};
         
-        function openExtensionOptions() {
-          // Try to navigate to extension URL
-          try {
-            window.location.href = extensionUrl;
-          } catch (e) {
-            // Fallback: try opening in new tab
-            try {
-              const link = document.createElement('a');
-              link.href = extensionUrl;
-              link.target = '_blank';
-              link.click();
-            } catch (e2) {
-              console.warn('Could not open extension URL:', e2);
-              // Last resort: show instructions
-              document.querySelector('.redirect-message').textContent = 'Click the button below to open the extension options page.';
-            }
-          }
-        }
-        
-        // Auto-redirect after short delay
-        setTimeout(openExtensionOptions, 1000);
-        
-        // Also handle button click
+        // Handle button click - try to open extension (may be blocked by Chrome)
         const btn = document.getElementById('openExtensionBtn');
         if (btn) {
           btn.addEventListener('click', function(e) {
             e.preventDefault();
-            openExtensionOptions();
+            // Try to open extension URL (Chrome may block this)
+            try {
+              // Method 1: Try direct link
+              const link = document.createElement('a');
+              link.href = extensionUrl;
+              link.target = '_blank';
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+              
+              // If that doesn't work, show alert
+              setTimeout(() => {
+                alert('If the extension options page didn\'t open, please:\n\n1. Right-click the Focus Nudge extension icon\n2. Click "Options"\n3. Your Pro features will activate automatically!');
+              }, 500);
+            } catch (e) {
+              console.warn('Could not open extension URL:', e);
+              alert('Please manually open the extension options page:\n\n1. Right-click the Focus Nudge extension icon\n2. Click "Options"\n3. Your Pro features will activate automatically!');
+            }
           });
         }
         ` : ''}

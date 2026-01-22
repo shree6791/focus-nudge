@@ -10,7 +10,7 @@ const weeklySummaryEl = document.getElementById('weeklySummary');
 const resetSummaryBtn = document.getElementById('resetSummary');
 
 // Extract from global scope (loaded via script tags)
-const { getPlan, getEffectiveSettings, setLicenseKey, clearDevPlan, getApiBaseUrl, getUserId } = self.FocusNudgePlan;
+const { getPlan, getEffectiveSettings, setLicenseKey, getApiBaseUrl, getUserId } = self.FocusNudgePlan;
 const { getWeeklySummary, resetWeeklySummary } = self.FocusNudgeMetrics;
 const { getSettings, saveSettings } = self.FocusNudgeSettings;
 
@@ -19,11 +19,6 @@ const upgradeSection = document.getElementById('upgradeSection');
 const upgradeButton = document.getElementById('upgradeButton');
 const manageSubscriptionSection = document.getElementById('manageSubscriptionSection');
 const manageButton = document.getElementById('manageButton');
-const clearDevPlanBtn = document.getElementById('clearDevPlan');
-const debugSection = document.getElementById('debugSection');
-const debugUserIdEl = document.getElementById('debugUserId');
-const copyUserIdBtn = document.getElementById('copyUserId');
-const checkLicenseBtn = document.getElementById('checkLicenseBtn');
 
 // Load and display current state
 async function loadState() {
@@ -160,12 +155,13 @@ async function checkLicenseActivation(forceCheck = false) {
     return;
   }
   
-  // Check for session ID in URL (from Stripe redirect)
+  // Check for payment indicators in URL (from Stripe redirect)
   const urlParams = new URLSearchParams(window.location.search);
   const sessionId = urlParams.get('session_id');
+  const paymentSuccess = urlParams.get('payment_success');
   
-  // Only poll if we have a session ID or are forcing a check
-  if (!sessionId && !forceCheck) {
+  // Only poll if we have payment indicators or are forcing a check
+  if (!sessionId && !paymentSuccess && !forceCheck) {
     return;
   }
   
@@ -334,66 +330,6 @@ resetSummaryBtn.addEventListener('click', async () => {
   }
 });
 
-// Clear dev plan button (for debugging)
-if (clearDevPlanBtn) {
-  clearDevPlanBtn.addEventListener('click', async () => {
-    if (confirm('Clear dev plan and reset to Basic? This will remove any dev toggle status.')) {
-      await clearDevPlan();
-      await loadState();
-      alert('Reset to Basic plan. Reload the page to see changes.');
-    }
-  });
-}
-
-// Show debug section if plan source is 'dev'
-async function checkDebugSection() {
-  const plan = await getPlan();
-  if (plan.source === 'dev') {
-    debugSection.style.display = 'block';
-    // Load user ID for debugging
-    const userId = await getUserId();
-    if (debugUserIdEl) {
-      debugUserIdEl.textContent = userId;
-    }
-  }
-}
-
-// Copy User ID button
-if (copyUserIdBtn) {
-  copyUserIdBtn.addEventListener('click', async () => {
-    const userId = await getUserId();
-    try {
-      await navigator.clipboard.writeText(userId);
-      copyUserIdBtn.textContent = 'Copied!';
-      setTimeout(() => {
-        copyUserIdBtn.textContent = 'Copy User ID';
-      }, 2000);
-    } catch (err) {
-      // Fallback for older browsers
-      const textArea = document.createElement('textarea');
-      textArea.value = userId;
-      document.body.appendChild(textArea);
-      textArea.select();
-      document.execCommand('copy');
-      document.body.removeChild(textArea);
-      copyUserIdBtn.textContent = 'Copied!';
-      setTimeout(() => {
-        copyUserIdBtn.textContent = 'Copy User ID';
-      }, 2000);
-    }
-  });
-}
-
-// Check License button
-if (checkLicenseBtn) {
-  checkLicenseBtn.addEventListener('click', async () => {
-    checkLicenseBtn.disabled = true;
-    checkLicenseBtn.textContent = 'Checking...';
-    await checkLicenseActivation(true); // Force check
-    checkLicenseBtn.disabled = false;
-    checkLicenseBtn.textContent = 'Check for License';
-  });
-}
 
 // Event listeners
 upgradeButton.addEventListener('click', handleUpgrade);
@@ -403,19 +339,17 @@ manageButton.addEventListener('click', handleManageSubscription);
 document.addEventListener('DOMContentLoaded', async () => {
   await loadState(); // Load current state first
   
-  // Always check for license activation if Basic (webhook might have fired)
+  // Check for license activation if Basic (webhook might have fired)
   const plan = await getPlan();
   if (!plan.isPro) {
-    // Check once silently (don't show loading if no payment indicators)
+    // Check URL params for payment success indicators
     const urlParams = new URLSearchParams(window.location.search);
-    if (!urlParams.get('session_id') && !urlParams.get('payment_success')) {
-      // No payment indicators, but check once anyway (webhook might have fired)
-      checkLicenseActivation(false).catch(() => {}); // Silent check, don't show errors
-    } else {
-      // Has payment indicators, show loading
+    if (urlParams.get('session_id') || urlParams.get('payment_success')) {
+      // Has payment indicators, check for license activation
       await checkLicenseActivation();
+    } else {
+      // No payment indicators, check once silently (webhook might have fired)
+      checkLicenseActivation(false).catch(() => {}); // Silent check, don't show errors
     }
   }
-  
-  await checkDebugSection(); // Show debug tools if needed
 });

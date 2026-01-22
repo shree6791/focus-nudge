@@ -19,8 +19,6 @@
       <div id="upgradeSection" style="display: none;">
         <button id="upgradeButton" class="button upgrade-button">Upgrade to Pro - $9.99/month</button>
         <p class="upgrade-note">Unlock customizable tones, drift thresholds, and cooldown settings</p>
-        <button id="checkLicenseBtn" class="button" style="background: #666; margin-top: 10px; font-size: 12px; padding: 6px 12px;">Check for License</button>
-        <p style="font-size: 11px; color: #999; margin-top: 5px;">Use this if you just completed payment</p>
       </div>
       <div id="manageSubscriptionSection" style="display: none;">
         <button id="manageButton" class="button">Manage Subscription</button>
@@ -63,16 +61,6 @@
       <button id="resetSummary" class="button">Reset this week's summary</button>
     </section>
 
-    <!-- Debug Section (hidden by default, can be shown via console) -->
-    <section class="section" id="debugSection" style="display: none; border-top: 2px solid #ff6b6b;">
-      <h2 style="color: #ff6b6b;">Debug Tools</h2>
-      <div id="debugInfo" style="margin-bottom: 15px; padding: 10px; background: #f9f9f9; border-radius: 4px;">
-        <p style="margin: 5px 0; font-size: 12px;"><strong>User ID:</strong> <span id="debugUserId" style="font-family: monospace; word-break: break-all;">Loading...</span></p>
-        <button id="copyUserId" class="button" style="background: #666; font-size: 12px; padding: 5px 10px; margin-top: 5px;">Copy User ID</button>
-      </div>
-      <button id="clearDevPlan" class="button" style="background: #ff6b6b;">Clear Dev Plan (Reset to Basic)</button>
-      <p style="font-size: 12px; color: #666; margin-top: 10px;">Use this if you see "Pro" but have no Stripe payment</p>
-    </section>
   </div>
 
   <script src="../../shared/plan.js"></script>

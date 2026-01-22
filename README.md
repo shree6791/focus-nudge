@@ -19,20 +19,21 @@ A browser extension that provides playful nudges when you drift into endless scr
 - Fixed cooldown: 30 minutes
 - Weekly summary included
 
-### Pro (Paid-ready)
+### Pro ($9.99/month)
 - Customizable tone: Gentle / Motivational / Sarcastic
 - Customizable drift threshold: 1-120 minutes
 - Customizable cooldown: 1-120 minutes
 - Weekly summary with Pro label
+- Manage subscription via Stripe Customer Portal
 
-*Note: Pro is currently simulated via dev toggle. Real Stripe integration coming soon.*
+*Pro features are activated via Stripe subscription. Upgrade anytime from the Options page.*
 
 ## How It Works
 
 Focus Nudge monitors your activity on LinkedIn and detects "drift mode" - when you're passively scrolling through the feed without engaging (scrolling a lot, typing little). After your set threshold, you'll receive a friendly nudge to help you refocus.
 
 **Features:**
-- **Calm Suppression**: After any nudge, all nudges are suppressed for 30 minutes globally
+- **Cooldown Period**: After any nudge, no new nudges appear until the cooldown period expires (30 min for Basic, customizable for Pro)
 - **Early Exit Detection**: If you leave LinkedIn within 2 minutes of a nudge, it's counted as an early exit
 - **Weekly Reset**: Counters automatically reset every Monday at 00:00 local time
 
@@ -55,9 +56,10 @@ Focus Nudge monitors your activity on LinkedIn and detects "drift mode" - when y
 1. **Open LinkedIn** and navigate to your feed
 2. **Access Options**: Right-click extension icon → Options, or go to `chrome://extensions` → Find "Focus Nudge" → Click "Options"
 3. **Configure settings**:
-   - Toggle Pro (dev builds only)
+   - Upgrade to Pro (if on Basic plan)
    - Set tone, drift threshold, and cooldown (Pro only)
    - View weekly summary
+   - Manage subscription (Pro users)
 4. **Use LinkedIn normally** - the extension works in the background
 5. **Receive nudges** when you've been scrolling passively for too long
 
@@ -78,7 +80,7 @@ focus-nudge-extension/
     icons/
   scripts/              # Build scripts: version bump, ZIP creation
   store/                # Store assets: screenshots, listing text
-  backend/              # (Future: Stripe webhook, license API)
+  backend/              # Stripe payment processing and license verification
   README.md
 ```
 
@@ -108,21 +110,21 @@ focus-nudge-extension/
 
 ### Testing
 
-1. **Basic Enforcement**: Set Pro settings while `isPro=false`, verify Basic defaults are enforced
-2. **Pro Toggle**: Enable Pro (dev), change settings, verify nudge uses new settings
-3. **Suppression**: Show nudge, verify no nudges for 30 minutes
+1. **Basic Enforcement**: Verify Basic plan uses fixed settings (gentle tone, 15 min threshold, 30 min cooldown)
+2. **Pro Features**: Upgrade to Pro, change settings, verify nudge uses new settings
+3. **Cooldown**: Show nudge, verify no new nudges until cooldown expires
 4. **Early Exit**: Show nudge, navigate away within 2 minutes, check counter increments
-5. **Weekly Reset**: Manually set `week_start_ms` to last week, verify counters reset
+5. **Weekly Reset**: Counters automatically reset every Monday
+6. **Payment Flow**: Test Stripe checkout, verify Pro activation after payment
 
 ## Privacy
 
 Focus Nudge is designed with privacy in mind:
-- ✅ No data collection
-- ✅ No tracking
-- ✅ No external servers
-- ✅ Everything runs locally on your device
-- ✅ Only works on LinkedIn
+- ✅ No data collection or tracking
 - ✅ All metrics stored locally in `chrome.storage.local`
+- ✅ Only works on LinkedIn
+- ✅ Backend only used for payment processing (Stripe) and license verification
+- ✅ No personal data sent to backend (only anonymous user ID for license management)
 
 ## Technical Details
 
