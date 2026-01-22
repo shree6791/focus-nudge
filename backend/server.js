@@ -11,8 +11,13 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors());
+
+// IMPORTANT: Webhook endpoint must receive raw body for signature verification
+// So we need to exclude it from JSON parsing
+app.use('/api/webhook', express.raw({ type: 'application/json' }));
+
+// JSON parsing for all other routes
 app.use(express.json());
-app.use(express.raw({ type: 'application/json' })); // For webhook signature verification
 
 // In-memory license store (replace with database in production)
 const licenses = new Map(); // userId -> { licenseKey, stripeCustomerId, status, expiresAt }
@@ -188,8 +193,9 @@ app.post('/api/create-portal-session', async (req, res) => {
 /**
  * Stripe Webhook Handler
  * Handles subscription events
+ * NOTE: This route must receive raw body (handled by middleware above)
  */
-app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+app.post('/api/webhook', async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
 
@@ -264,9 +270,77 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
 });
 
 /**
+ * Auto-create license from Stripe session (fallback if webhook didn't fire)
+ * POST /api/auto-create-license
+ * Body: { sessionId: "cs_...", userId: "fn_..." }
+ * This is called by the extension as a fallback if webhook is delayed
+ */
+app.post('/api/auto-create-license', async (req, res) => {
+  try {
+    const { sessionId, userId } = req.body;
+
+    if (!sessionId || !userId) {
+      return res.status(400).json({ error: 'Missing sessionId or userId' });
+    }
+
+    // Check if license already exists
+    const existing = licenses.get(userId);
+    if (existing && existing.status === 'active') {
+      return res.json({ 
+        success: true, 
+        licenseKey: existing.licenseKey,
+        message: 'License already exists' 
+      });
+    }
+
+    // Retrieve session from Stripe
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    
+    if (session.payment_status !== 'paid') {
+      return res.status(400).json({ error: 'Payment not completed' });
+    }
+
+    if (session.mode !== 'subscription') {
+      return res.status(400).json({ error: 'Not a subscription session' });
+    }
+
+    // Get subscription
+    const subscription = await stripe.subscriptions.retrieve(session.subscription);
+    const customerId = subscription.customer;
+
+    if (subscription.status !== 'active' && subscription.status !== 'trialing') {
+      return res.status(400).json({ error: `Subscription status is ${subscription.status}, not active` });
+    }
+
+    // Generate license key
+    const licenseKey = `fn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    licenses.set(userId, {
+      licenseKey,
+      stripeCustomerId: customerId,
+      stripeSubscriptionId: subscription.id,
+      status: 'active',
+      expiresAt: null,
+    });
+    
+    console.log(`[AUTO-CREATE] License created for userId: ${userId}, sessionId: ${sessionId}`);
+    
+    res.json({ 
+      success: true, 
+      licenseKey,
+      message: 'License created successfully' 
+    });
+  } catch (error) {
+    console.error('Auto-create license error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * Debug endpoint: Manually create license from Stripe customer
  * GET /api/debug/create-license?userId=xxx&customerId=xxx
  * Use this if webhook didn't fire or server restarted
+ * NOTE: This is a debug endpoint - consider removing in production
  */
 app.get('/api/debug/create-license', async (req, res) => {
   try {
