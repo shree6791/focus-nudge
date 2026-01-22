@@ -1,14 +1,22 @@
 (() => {
-  // ---- Local counters (reset every minute) ----
+  // Constants
+  const OVERLAY_ID = "focus-nudge-overlay";
+  const OVERLAY_DISPLAY_DURATION_MS = 20000; // 20 seconds
+  const OVERLAY_FADE_OUT_MS = 450;
+  const COUNTER_RESET_INTERVAL_MS = 60_000; // 1 minute
+
+  // Local counters (reset every minute)
   let scrollCount = 0;
   let keyCount = 0;
   let clickCount = 0;
-
   let lastResetTs = Date.now();
 
+  /**
+   * Reset counters if a minute has passed
+   */
   const resetIfNeeded = () => {
     const now = Date.now();
-    if (now - lastResetTs >= 60_000) {
+    if (now - lastResetTs >= COUNTER_RESET_INTERVAL_MS) {
       scrollCount = 0;
       keyCount = 0;
       clickCount = 0;
@@ -31,14 +39,16 @@
     clickCount += 1;
   }, { passive: true });
 
-  // ---- Overlay ----
-  const OVERLAY_ID = "focus-nudge-overlay";
-
+  /**
+   * Show overlay with nudge message
+   * @param {string} message - Message to display
+   */
   function showOverlay(message) {
-    // Remove existing
+    // Remove existing overlay if present
     const existing = document.getElementById(OVERLAY_ID);
     if (existing) existing.remove();
 
+    // Create overlay container
     const el = document.createElement("div");
     el.id = OVERLAY_ID;
     el.style.cssText = `
@@ -50,6 +60,7 @@
       pointer-events: none;
     `;
 
+    // Create inner message box
     const inner = document.createElement("div");
     inner.className = "focus-nudge-inner";
     inner.textContent = message;
@@ -70,24 +81,34 @@
     el.appendChild(inner);
     document.body.appendChild(el);
 
-    // Auto-hide after 20 seconds (increased for better visibility)
+    // Auto-hide after display duration
     setTimeout(() => {
       el.classList.add("fade-out");
-      setTimeout(() => el.remove(), 450);
-    }, 20000);
+      setTimeout(() => el.remove(), OVERLAY_FADE_OUT_MS);
+    }, OVERLAY_DISPLAY_DURATION_MS);
   }
 
+  /**
+   * Get current page mode from rules
+   * @returns {Object} Mode object with site, mode, and confidence
+   */
   function getMode() {
     try {
-      if (window.FocusNudgeRules && typeof window.FocusNudgeRules.classifyLinkedIn === 'function') {
+      if (window.FocusNudgeRules?.classifyLinkedIn) {
         return window.FocusNudgeRules.classifyLinkedIn();
       }
-      return { site: "linkedin", mode: "UNKNOWN", confidence: 0.1 };
-    } catch {
-      return { site: "linkedin", mode: "UNKNOWN", confidence: 0.1 };
+    } catch (error) {
+      console.warn('[Focus Nudge] Error getting mode:', error);
     }
+    
+    // Default fallback
+    return { site: "linkedin", mode: "UNKNOWN", confidence: 0.1 };
   }
 
+  /**
+   * Get current behavior metrics (per minute rates)
+   * @returns {Object} Behavior metrics
+   */
   function getBehavior() {
     resetIfNeeded();
     return {

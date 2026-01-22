@@ -5,9 +5,19 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const { createLicense, findUserIdByCustomerId, isValidLicense } = require('./licenseService');
+const { initWebhookHandlers } = require('./webhookHandlers');
+
+// Initialize webhook handlers with Stripe instance
+const { handleCheckoutCompleted, handleSubscriptionUpdate } = initWebhookHandlers(stripe);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Constants
+const BACKEND_URL = process.env.BACKEND_URL || 'https://focus-nudge-extension.onrender.com';
+const SUBSCRIPTION_PRICE_CENTS = 999; // $9.99
+const SUBSCRIPTION_INTERVAL = 'month';
 
 // Middleware
 app.use(cors());
@@ -41,7 +51,7 @@ app.get('/api/get-license', async (req, res) => {
 
     const license = licenses.get(userId);
 
-    if (!license || license.status !== 'active') {
+    if (!isValidLicense(license)) {
       return res.status(404).json({ error: 'No active license found' });
     }
 
@@ -66,20 +76,7 @@ app.get('/api/verify-license', async (req, res) => {
 
     const license = licenses.get(userId);
 
-    if (!license) {
-      return res.json({ valid: false, isPro: false });
-    }
-
-    if (license.licenseKey !== licenseKey) {
-      return res.json({ valid: false, isPro: false });
-    }
-
-    if (license.status !== 'active') {
-      return res.json({ valid: false, isPro: false });
-    }
-
-    // Check expiration (if subscription-based)
-    if (license.expiresAt && new Date(license.expiresAt) < new Date()) {
+    if (!license || license.licenseKey !== licenseKey || !isValidLicense(license)) {
       return res.json({ valid: false, isPro: false });
     }
 
@@ -104,59 +101,39 @@ app.post('/api/create-checkout-session', async (req, res) => {
 
     // Stripe can't redirect to chrome-extension:// URLs
     // Always use web-accessible success page on our backend
-    // NEVER use req.headers.origin as it might be chrome-extension://
-    let baseUrl = process.env.BACKEND_URL || 'https://focus-nudge-extension.onrender.com';
-    
-    // Explicitly reject chrome-extension URLs
-    if (baseUrl.includes('chrome-extension')) {
-      console.warn('[CHECKOUT] Rejected chrome-extension URL, using default');
-      baseUrl = 'https://focus-nudge-extension.onrender.com';
-    }
-    
-    // Ensure baseUrl is a valid HTTP/HTTPS URL (never chrome-extension)
-    const safeBaseUrl = baseUrl.startsWith('http') && !baseUrl.includes('chrome-extension') 
-      ? baseUrl 
-      : 'https://focus-nudge-extension.onrender.com';
+    const safeBaseUrl = BACKEND_URL.includes('chrome-extension') 
+      ? 'https://focus-nudge-extension.onrender.com' 
+      : BACKEND_URL;
     
     const successUrl = `${safeBaseUrl}/success?session_id={CHECKOUT_SESSION_ID}&userId=${encodeURIComponent(userId)}`;
-    
-    // Cancel URL - explicitly reject chrome-extension URLs
-    let cancelUrl = `${safeBaseUrl}/cancel`;
-    if (returnUrl && returnUrl.startsWith('http') && !returnUrl.includes('chrome-extension')) {
-      cancelUrl = returnUrl;
-    }
+    const cancelUrl = (returnUrl && returnUrl.startsWith('http') && !returnUrl.includes('chrome-extension'))
+      ? returnUrl 
+      : `${safeBaseUrl}/cancel`;
     
     console.log(`[CHECKOUT] Creating session for userId: ${userId}`);
-    console.log(`[CHECKOUT] Success URL: ${successUrl}`);
-    console.log(`[CHECKOUT] Cancel URL: ${cancelUrl}`);
-    console.log(`[CHECKOUT] Received returnUrl: ${returnUrl || 'none'}`);
 
     // Create Stripe Checkout Session
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
-      line_items: [
-        {
-          price_data: {
-            currency: 'usd',
-            product_data: {
-              name: 'Focus Nudge Pro',
-              description: 'Unlock customizable nudges and advanced features',
-            },
-            unit_amount: 999, // $9.99 in cents
-            recurring: {
-              interval: 'month', // Monthly subscription
-            },
+      line_items: [{
+        price_data: {
+          currency: 'usd',
+          product_data: {
+            name: 'Focus Nudge Pro',
+            description: 'Unlock customizable nudges and advanced features',
           },
-          quantity: 1,
+          unit_amount: SUBSCRIPTION_PRICE_CENTS,
+          recurring: {
+            interval: SUBSCRIPTION_INTERVAL,
+          },
         },
-      ],
+        quantity: 1,
+      }],
       mode: 'subscription',
       success_url: successUrl,
       cancel_url: cancelUrl,
-      client_reference_id: userId, // Store userId for webhook
-      metadata: {
-        userId: userId,
-      },
+      client_reference_id: userId,
+      metadata: { userId },
     });
 
     res.json({ sessionId: session.id, url: session.url });
@@ -217,55 +194,16 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
     
     switch (event.type) {
       case 'checkout.session.completed':
-        const session = event.data.object;
-        const userId = session.client_reference_id || session.metadata?.userId;
-        
-        console.log(`[WEBHOOK] Checkout completed - userId: ${userId}, mode: ${session.mode}, subscription: ${session.subscription}`);
-        
-        if (userId && session.mode === 'subscription') {
-          const subscription = await stripe.subscriptions.retrieve(session.subscription);
-          const customerId = subscription.customer;
-          
-          console.log(`[WEBHOOK] Subscription retrieved - customerId: ${customerId}, status: ${subscription.status}`);
-          
-          // Generate license key
-          const licenseKey = `fn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-          
-          licenses.set(userId, {
-            licenseKey,
-            stripeCustomerId: customerId,
-            stripeSubscriptionId: subscription.id,
-            status: 'active',
-            expiresAt: null, // Subscription-based, no expiration
-          });
-          
-          console.log(`[WEBHOOK] ✅ License activated for userId: ${userId}, licenseKey: ${licenseKey}`);
-        } else {
-          console.warn(`[WEBHOOK] ⚠️ Checkout completed but missing userId or not subscription mode. userId: ${userId}, mode: ${session.mode}`);
-        }
+        await handleCheckoutCompleted(event.data.object, licenses);
         break;
 
       case 'customer.subscription.updated':
       case 'customer.subscription.deleted':
-        const subscription = event.data.object;
-        const customerId = subscription.customer;
-        
-        // Find user by customer ID
-        for (const [userId, license] of licenses.entries()) {
-          if (license.stripeCustomerId === customerId) {
-            if (subscription.status === 'active' || subscription.status === 'trialing') {
-              licenses.set(userId, { ...license, status: 'active' });
-            } else {
-              licenses.set(userId, { ...license, status: 'canceled' });
-            }
-            console.log(`License updated for userId: ${userId}, status: ${subscription.status}`);
-            break;
-          }
-        }
+        handleSubscriptionUpdate(event.data.object, licenses);
         break;
 
       default:
-        console.log(`Unhandled event type: ${event.type}`);
+        console.log(`[WEBHOOK] Unhandled event type: ${event.type}`);
     }
 
     res.json({ received: true });
@@ -291,7 +229,7 @@ app.post('/api/auto-create-license', async (req, res) => {
 
     // Check if license already exists
     const existing = licenses.get(userId);
-    if (existing && existing.status === 'active') {
+    if (isValidLicense(existing)) {
       return res.json({ 
         success: true, 
         licenseKey: existing.licenseKey,
@@ -299,35 +237,25 @@ app.post('/api/auto-create-license', async (req, res) => {
       });
     }
 
-    // Retrieve session from Stripe
+    // Retrieve and validate session from Stripe
     const session = await stripe.checkout.sessions.retrieve(sessionId);
     
+    // Validate session
     if (session.payment_status !== 'paid') {
       return res.status(400).json({ error: 'Payment not completed' });
     }
-
     if (session.mode !== 'subscription') {
       return res.status(400).json({ error: 'Not a subscription session' });
     }
 
-    // Get subscription
+    // Get subscription and validate
     const subscription = await stripe.subscriptions.retrieve(session.subscription);
-    const customerId = subscription.customer;
-
     if (subscription.status !== 'active' && subscription.status !== 'trialing') {
       return res.status(400).json({ error: `Subscription status is ${subscription.status}, not active` });
     }
 
-    // Generate license key
-    const licenseKey = `fn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    
-    licenses.set(userId, {
-      licenseKey,
-      stripeCustomerId: customerId,
-      stripeSubscriptionId: subscription.id,
-      status: 'active',
-      expiresAt: null,
-    });
+    // Create license using shared function
+    const licenseKey = createLicense(userId, subscription.customer, subscription.id, licenses);
     
     console.log(`[AUTO-CREATE] License created for userId: ${userId}, sessionId: ${sessionId}`);
     
@@ -337,77 +265,75 @@ app.post('/api/auto-create-license', async (req, res) => {
       message: 'License created successfully' 
     });
   } catch (error) {
-    console.error('Auto-create license error:', error);
+    console.error('[AUTO-CREATE] Error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
 /**
- * Debug endpoint: Manually create license from Stripe customer
- * GET /api/debug/create-license?userId=xxx&customerId=xxx
- * Use this if webhook didn't fire or server restarted
- * NOTE: This is a debug endpoint - consider removing in production
+ * Debug endpoints (only in development)
+ * These are disabled in production for security
  */
-app.get('/api/debug/create-license', async (req, res) => {
-  try {
-    const { userId, customerId } = req.query;
+const IS_DEV = process.env.NODE_ENV !== 'production';
 
-    if (!userId || !customerId) {
-      return res.status(400).json({ error: 'Missing userId or customerId' });
+if (IS_DEV) {
+  /**
+   * Debug endpoint: Manually create license from Stripe customer
+   * GET /api/debug/create-license?userId=xxx&customerId=xxx
+   */
+  app.get('/api/debug/create-license', async (req, res) => {
+    try {
+      const { userId, customerId } = req.query;
+
+      if (!userId || !customerId) {
+        return res.status(400).json({ error: 'Missing userId or customerId' });
+      }
+
+      // Verify customer exists in Stripe
+      await stripe.customers.retrieve(customerId);
+      const subscriptions = await stripe.subscriptions.list({ customer: customerId, limit: 1 });
+
+      if (subscriptions.data.length === 0) {
+        return res.status(404).json({ error: 'No subscription found for this customer' });
+      }
+
+      const subscription = subscriptions.data[0];
+      
+      if (subscription.status !== 'active' && subscription.status !== 'trialing') {
+        return res.status(400).json({ error: `Subscription status is ${subscription.status}, not active` });
+      }
+
+      // Create license using shared function
+      const licenseKey = createLicense(userId, customerId, subscription.id, licenses);
+      
+      console.log(`[DEBUG] License manually created for userId: ${userId}, customerId: ${customerId}`);
+      
+      res.json({ 
+        success: true, 
+        licenseKey,
+        message: 'License created successfully' 
+      });
+    } catch (error) {
+      console.error('[DEBUG] Error:', error);
+      res.status(500).json({ error: error.message });
     }
+  });
 
-    // Verify customer exists in Stripe
-    const customer = await stripe.customers.retrieve(customerId);
-    const subscriptions = await stripe.subscriptions.list({ customer: customerId, limit: 1 });
-
-    if (subscriptions.data.length === 0) {
-      return res.status(404).json({ error: 'No subscription found for this customer' });
-    }
-
-    const subscription = subscriptions.data[0];
+  /**
+   * Debug endpoint: List all licenses (for debugging)
+   * GET /api/debug/licenses
+   */
+  app.get('/api/debug/licenses', (req, res) => {
+    const licenseList = Array.from(licenses.entries()).map(([userId, license]) => ({
+      userId,
+      licenseKey: license.licenseKey,
+      customerId: license.stripeCustomerId,
+      status: license.status
+    }));
     
-    if (subscription.status !== 'active' && subscription.status !== 'trialing') {
-      return res.status(400).json({ error: `Subscription status is ${subscription.status}, not active` });
-    }
-
-    // Generate license key
-    const licenseKey = `fn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    
-    licenses.set(userId, {
-      licenseKey,
-      stripeCustomerId: customerId,
-      stripeSubscriptionId: subscription.id,
-      status: 'active',
-      expiresAt: null,
-    });
-    
-    console.log(`[DEBUG] License manually created for userId: ${userId}, customerId: ${customerId}`);
-    
-    res.json({ 
-      success: true, 
-      licenseKey,
-      message: 'License created successfully' 
-    });
-  } catch (error) {
-    console.error('Debug create license error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-/**
- * Debug endpoint: List all licenses (for debugging)
- * GET /api/debug/licenses
- */
-app.get('/api/debug/licenses', (req, res) => {
-  const licenseList = Array.from(licenses.entries()).map(([userId, license]) => ({
-    userId,
-    licenseKey: license.licenseKey,
-    customerId: license.stripeCustomerId,
-    status: license.status
-  }));
-  
-  res.json({ count: licenses.size, licenses: licenseList });
-});
+    res.json({ count: licenses.size, licenses: licenseList });
+  });
+}
 
 /**
  * Get public configuration (publishable key)

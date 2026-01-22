@@ -168,53 +168,126 @@ async function checkLicenseActivation(forceCheck = false) {
   }
   
   // Payment was made OR we're checking manually - poll for license activation
-  // Poll for license key (webhook might take a moment)
+  await pollForLicenseActivation();
+}
+
+/**
+ * Poll backend for license activation
+ * Tries webhook first, then auto-create fallback if sessionId available
+ */
+async function pollForLicenseActivation() {
   try {
     const userId = await getUserId();
     const apiUrl = getApiBaseUrl();
     
-    let attempts = 0;
-    const maxAttempts = 20; // Poll for up to 20 seconds
+    // Get session ID from URL if available
+    const urlParams = new URLSearchParams(window.location.search);
+    const sessionId = urlParams.get('session_id');
     
     // Show loading indicator
     if (planStatusEl) {
       planStatusEl.textContent = 'Activating...';
     }
     
-    while (attempts < maxAttempts) {
+    // First, try waiting for webhook (faster if it works)
+    const licenseKey = await pollForLicense(userId, apiUrl, 10); // 10 seconds for webhook
+    
+    if (licenseKey) {
+      await activateLicense(licenseKey);
+      return;
+    }
+    
+    // Webhook didn't fire - try auto-create fallback (if we have sessionId)
+    if (sessionId && sessionId.startsWith('cs_')) {
+      console.log('[Focus Nudge] Webhook delayed, trying auto-create fallback...');
+      const fallbackLicenseKey = await tryAutoCreateLicense(userId, sessionId, apiUrl);
+      
+      if (fallbackLicenseKey) {
+        await activateLicense(fallbackLicenseKey);
+        return;
+      }
+    }
+    
+    // License not found yet
+    if (planStatusEl) {
+      planStatusEl.textContent = 'Basic';
+    }
+    alert('Payment received, but license activation is pending. Please refresh this page in 10-20 seconds.');
+  } catch (error) {
+    console.error('[Focus Nudge] License activation error:', error);
+    if (planStatusEl) {
+      planStatusEl.textContent = 'Basic';
+    }
+    alert('Payment received, but license activation failed. Please contact support.');
+  }
+}
+
+/**
+ * Poll backend for license key
+ * @param {string} userId - User ID
+ * @param {string} apiUrl - Backend API URL
+ * @param {number} maxAttempts - Maximum polling attempts
+ * @returns {Promise<string|null>} License key if found, null otherwise
+ */
+async function pollForLicense(userId, apiUrl, maxAttempts = 10) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
       const response = await fetch(`${apiUrl}/api/get-license?userId=${encodeURIComponent(userId)}`);
       
       if (response.ok) {
         const { licenseKey } = await response.json();
-        
-        // Store license key
-        await setLicenseKey(licenseKey);
-        
-        // Reload state to show Pro
-        await loadState();
-        
-        // Show success message
-        alert('✅ Payment successful! Pro features are now active.');
-        
-        // Clean URL
-        window.history.replaceState({}, document.title, window.location.pathname);
-        return;
+        return licenseKey;
       }
-      
-      // Wait before retrying
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      attempts++;
+    } catch (error) {
+      console.warn(`[Focus Nudge] Poll attempt ${attempt + 1} failed:`, error);
     }
     
-    // If we get here, license wasn't found yet
-    if (planStatusEl) {
-      planStatusEl.textContent = 'Basic';
+    // Wait before retrying (except on last attempt)
+    if (attempt < maxAttempts - 1) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
-    alert('Payment received, but license activation is pending. The webhook may take a few moments. Please refresh this page in 10-20 seconds, or use the manual license creation method if needed.');
-  } catch (error) {
-    console.error('License activation error:', error);
-    alert('Payment received, but license activation failed. Please contact support or use the manual license creation method.');
   }
+  
+  return null;
+}
+
+/**
+ * Try auto-create license fallback
+ * @param {string} userId - User ID
+ * @param {string} sessionId - Stripe session ID
+ * @param {string} apiUrl - Backend API URL
+ * @returns {Promise<string|null>} License key if created, null otherwise
+ */
+async function tryAutoCreateLicense(userId, sessionId, apiUrl) {
+  try {
+    const response = await fetch(`${apiUrl}/api/auto-create-license`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, userId })
+    });
+    
+    if (response.ok) {
+      const { licenseKey } = await response.json();
+      return licenseKey;
+    }
+  } catch (error) {
+    console.warn('[Focus Nudge] Auto-create fallback failed:', error);
+  }
+  
+  return null;
+}
+
+/**
+ * Activate license and update UI
+ * @param {string} licenseKey - License key to activate
+ */
+async function activateLicense(licenseKey) {
+  await setLicenseKey(licenseKey);
+  await loadState();
+  alert('✅ Payment successful! Pro features are now active.');
+  
+  // Clean URL
+  window.history.replaceState({}, document.title, window.location.pathname);
 }
 
 // Legacy function name for compatibility

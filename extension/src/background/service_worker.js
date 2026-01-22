@@ -109,17 +109,57 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   tabState.delete(tabId);
 });
 
-// Main tick function
+// Constants
+const TICK_INTERVAL_MS = 5000;
+const DRIFT_DECAY_RATE = 2; // Decay drift 2x faster than accumulation
+const DRIFT_RESET_RATIO = 0.6; // Reset to 60% after nudge to prevent spam
+const PASSIVE_SCROLL_THRESHOLD = 5; // scrolls per minute
+const PASSIVE_KEY_THRESHOLD = 2; // keys per minute
+
+/**
+ * Check if user behavior is passive (scrolling a lot, little typing)
+ * @param {Object} behavior - Behavior metrics
+ * @returns {boolean} True if behavior is passive
+ */
+function isPassiveBehavior(behavior) {
+  return behavior.scrollPerMin >= PASSIVE_SCROLL_THRESHOLD && 
+         behavior.keyPerMin <= PASSIVE_KEY_THRESHOLD;
+}
+
+/**
+ * Update drift time based on mode and behavior
+ * @param {Object} state - Tab state
+ * @param {string} mode - Current page mode
+ * @param {Object} behavior - User behavior metrics
+ * @param {number} delta - Time delta in milliseconds
+ */
+function updateDriftTime(state, mode, behavior, delta) {
+  const isPassive = isPassiveBehavior(behavior);
+  
+  if (mode === "DRIFT" && isPassive) {
+    // Accumulate drift time when in DRIFT mode AND passive
+    state.driftMs += delta;
+  } else {
+    // Decay drift when user becomes active or changes mode
+    state.driftMs = Math.max(0, state.driftMs - delta * DRIFT_DECAY_RATE);
+  }
+}
+
+/**
+ * Main tick function - checks for drift and shows nudges
+ */
 async function tick() {
-  // Check if extension is enabled (stored separately)
+  // Check if extension is enabled
   const stored = await chrome.storage.local.get({ focusNudgeEnabled: true });
   if (!stored.focusNudgeEnabled) return;
 
+  // Get active LinkedIn tab
   const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (!active?.id || !active.url?.startsWith("https://www.linkedin.com/")) return;
 
   const tabId = active.id;
 
+  // Initialize or get tab state
   const state = tabState.get(tabId) || {
     driftMs: 0,
     lastNudgeMs: 0,
@@ -131,11 +171,12 @@ async function tick() {
   const delta = nowMs() - state.lastTickMs;
   state.lastTickMs = nowMs();
 
-  // Ask content script for mode + behavior
+  // Get page state from content script
   let resp;
   try {
     resp = await chrome.tabs.sendMessage(tabId, { type: "FOCUS_NUDGE_GET_STATE" });
   } catch (err) {
+    // Content script not ready or tab closed
     tabState.set(tabId, state);
     return;
   }
@@ -143,40 +184,34 @@ async function tick() {
   const mode = resp?.mode?.mode || "UNKNOWN";
   const behavior = resp?.behavior || { scrollPerMin: 0, keyPerMin: 0, clickPerMin: 0 };
 
-  // Passive heuristic: scrolling a lot, little typing
-  const passive = behavior.scrollPerMin >= 5 && behavior.keyPerMin <= 2;
-
-  // Accumulate drift time only when in DRIFT mode AND passive
-  if (mode === "DRIFT" && passive) {
-    state.driftMs += delta;
-  } else {
-    // decay drift when user becomes active or changes mode
-    state.driftMs = Math.max(0, state.driftMs - delta * 2);
-  }
+  // Update drift time
+  updateDriftTime(state, mode, behavior, delta);
 
   // Get effective settings based on plan
   const effectiveSettings = await getEffectiveSettings();
   const driftThresholdMs = effectiveSettings.drift_threshold_min * 60_000;
   const cooldownMs = effectiveSettings.cooldown_min * 60_000;
 
+  // Check if we should show a nudge
   const canNudge = nowMs() - state.lastNudgeMs >= cooldownMs;
+  const shouldNudge = state.driftMs >= driftThresholdMs && canNudge;
 
-  if (state.driftMs >= driftThresholdMs && canNudge) {
+  if (shouldNudge) {
     const msg = pickMessage(effectiveSettings.tone);
     await chrome.tabs.sendMessage(tabId, { type: "FOCUS_NUDGE_SHOW_OVERLAY", message: msg });
     state.lastNudgeMs = nowMs();
-    // slight reset so it doesn't spam if they ignore
-    state.driftMs = driftThresholdMs * 0.6;
+    // Reset drift to prevent spam if user ignores
+    state.driftMs = driftThresholdMs * DRIFT_RESET_RATIO;
   }
 
+  // Update state
   state.lastMode = mode;
   state.lastUrl = resp?.url || active.url;
-
   tabState.set(tabId, state);
 }
 
-// Run every 5 seconds
-setInterval(tick, 5000);
+// Run tick function at regular intervals
+setInterval(tick, TICK_INTERVAL_MS);
 
 // Message handlers
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
