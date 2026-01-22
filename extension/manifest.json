@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Focus Nudge",
   "version": "0.1.0",
-  "description": "Get gentle reminders when you're mindlessly scrolling on LinkedIn. Stay focused and use your time intentionally with customizable nudges.",
+  "description": "Quick, customizable nudges to stop autopilot scrolling and reclaim your focus on LinkedIn.",
   "permissions": ["tabs", "storage"],
   "host_permissions": [
     "https://www.linkedin.com/*",
