@@ -93,11 +93,11 @@ app.post('/api/create-checkout-session', async (req, res) => {
     }
 
     // Stripe can't redirect to chrome-extension:// URLs
-    // Use a web-accessible success page or a simple redirect page
-    // For now, use a simple success message page
+    // Always use web-accessible success page on our backend
     const baseUrl = process.env.BACKEND_URL || req.headers.origin || 'https://focus-nudge-extension.onrender.com';
     const successUrl = `${baseUrl}/success?session_id={CHECKOUT_SESSION_ID}&userId=${encodeURIComponent(userId)}`;
-    const cancelUrl = returnUrl && returnUrl.startsWith('http') ? returnUrl : `${baseUrl}/cancel`;
+    // Cancel URL - only use web URLs, ignore chrome-extension URLs
+    const cancelUrl = (returnUrl && returnUrl.startsWith('http')) ? returnUrl : `${baseUrl}/cancel`;
 
     // Create Stripe Checkout Session
     const session = await stripe.checkout.sessions.create({

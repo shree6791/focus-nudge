@@ -73,7 +73,8 @@ async function handleUpgrade() {
 
     const userId = await getUserId();
     const apiUrl = getApiBaseUrl();
-    const returnUrl = chrome.runtime.getURL('src/ui/options/options.html');
+    // Don't send chrome-extension URL - backend will use web URL instead
+    // const returnUrl = chrome.runtime.getURL('src/ui/options/options.html');
 
     // Create checkout session
     const response = await fetch(`${apiUrl}/api/create-checkout-session`, {
@@ -82,8 +83,8 @@ async function handleUpgrade() {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        userId: userId,
-        returnUrl: returnUrl
+        userId: userId
+        // returnUrl removed - backend handles success URL
       })
     });
 
