@@ -118,18 +118,16 @@ app.post('/api/create-checkout-session', async (req, res) => {
     }
 
     // Stripe can't redirect to chrome-extension:// URLs directly
-    // Use web-accessible success page that will redirect to extension
+    // Use web-accessible success page - extension will pick up payment from localStorage
     const safeBaseUrl = BACKEND_URL.includes('chrome-extension') 
       ? 'https://focus-nudge-extension.onrender.com' 
       : BACKEND_URL;
     
-    // Include extension info in success URL for proper redirect
-    const successUrl = `${safeBaseUrl}/success?session_id={CHECKOUT_SESSION_ID}&userId=${encodeURIComponent(userId)}${extensionId ? `&extId=${encodeURIComponent(extensionId)}` : ''}${extensionOptionsUrl ? `&extUrl=${encodeURIComponent(extensionOptionsUrl)}` : ''}`;
+    // Success URL - no extension URL needed (we use localStorage instead)
+    const successUrl = `${safeBaseUrl}/success?session_id={CHECKOUT_SESSION_ID}&userId=${encodeURIComponent(userId)}`;
     const cancelUrl = `${safeBaseUrl}/cancel`;
     
     console.log(`[CHECKOUT] Creating session for userId: ${userId}`);
-    console.log(`[CHECKOUT] Extension ID: ${extensionId || 'not provided'}`);
-    console.log(`[CHECKOUT] Extension Options URL: ${extensionOptionsUrl || 'not provided'}`);
     console.log(`[CHECKOUT] Using Price ID: ${STRIPE_PRICE_ID}`);
     console.log(`[CHECKOUT] Note: Coupon codes can be entered directly on Stripe Checkout page`);
 
