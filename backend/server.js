@@ -4,9 +4,11 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const { createLicense, findUserIdByCustomerId, isValidLicense } = require('./licenseService');
 const { initWebhookHandlers } = require('./webhookHandlers');
+const db = require('./database');
 
 // Initialize webhook handlers with Stripe instance
 const { handleCheckoutCompleted, handleSubscriptionUpdate } = initWebhookHandlers(stripe);
@@ -23,8 +25,65 @@ if (!STRIPE_PRICE_ID) {
   process.exit(1);
 }
 
+// Helper: Extract customer ID from Stripe object (handles both string and object)
+function extractCustomerId(customer) {
+  return typeof customer === 'string' ? customer : customer.id;
+}
+
+// CORS Configuration - Allow Chrome extension origins and your backend URL
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps, Postman, or curl)
+    // In production, you might want to restrict this
+    if (!origin) {
+      return callback(null, true);
+    }
+    
+    // Allow Chrome extension origins (chrome-extension://*)
+    if (origin.startsWith('chrome-extension://')) {
+      return callback(null, true);
+    }
+    
+    // Allow your backend URL (for success/cancel pages)
+    if (origin === BACKEND_URL || origin.startsWith(BACKEND_URL)) {
+      return callback(null, true);
+    }
+    
+    // Block all other origins
+    callback(new Error('Not allowed by CORS'));
+  },
+  credentials: false,
+  optionsSuccessStatus: 200
+};
+
+// Rate Limiting Configuration
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per windowMs
+  message: 'Too many requests from this IP, please try again later.',
+  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
+  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+});
+
+// Stricter rate limit for checkout/portal endpoints
+const paymentLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // Limit to 10 requests per 15 minutes for payment endpoints
+  message: 'Too many payment requests, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // Middleware
-app.use(cors());
+app.use(cors(corsOptions));
+
+// Apply rate limiting to API routes (exclude webhook - it's called by Stripe)
+app.use('/api/', (req, res, next) => {
+  if (req.path === '/api/webhook') {
+    return next(); // Skip rate limiting for webhook
+  }
+  apiLimiter(req, res, next);
+});
 
 // IMPORTANT: Webhook endpoint must receive raw body for signature verification
 // Skip JSON parsing for webhook route - it needs raw body
@@ -38,9 +97,6 @@ app.use((req, res, next) => {
   }
 });
 
-// In-memory license store (replace with database in production)
-const licenses = new Map(); // userId -> { licenseKey, stripeCustomerId, status, expiresAt }
-
 /**
  * Get license key for user (after successful checkout)
  * GET /api/get-license?userId=xxx
@@ -53,7 +109,7 @@ app.get('/api/get-license', async (req, res) => {
       return res.status(400).json({ error: 'Missing userId' });
     }
 
-    const license = licenses.get(userId);
+    const license = db.getLicenseByUserId(userId);
 
     if (!license) {
       return res.status(404).json({ error: 'No license found for this user' });
@@ -81,7 +137,7 @@ app.get('/api/verify-license', async (req, res) => {
       return res.status(400).json({ error: 'Missing userId or licenseKey' });
     }
 
-    const license = licenses.get(userId);
+    const license = db.getLicenseByUserId(userId);
 
     if (!license || license.licenseKey !== licenseKey || !isValidLicense(license)) {
       return res.json({ valid: false, isPro: false });
@@ -98,7 +154,7 @@ app.get('/api/verify-license', async (req, res) => {
  * Create Stripe Checkout Session
  * POST /api/create-checkout-session
  */
-app.post('/api/create-checkout-session', async (req, res) => {
+app.post('/api/create-checkout-session', paymentLimiter, async (req, res) => {
   try {
     const { userId } = req.body;
 
@@ -113,8 +169,6 @@ app.post('/api/create-checkout-session', async (req, res) => {
     
     const successUrl = `${safeBaseUrl}/success?session_id={CHECKOUT_SESSION_ID}&userId=${encodeURIComponent(userId)}`;
     const cancelUrl = `${safeBaseUrl}/cancel`;
-    
-    console.log(`[CHECKOUT] Creating session for userId: ${userId}`);
 
     // Build checkout session config
     // Stripe Checkout will automatically show "Have a promo code?" link
@@ -157,7 +211,7 @@ app.post('/api/create-checkout-session', async (req, res) => {
  * Create Portal Session (for managing subscription)
  * POST /api/create-portal-session
  */
-app.post('/api/create-portal-session', async (req, res) => {
+app.post('/api/create-portal-session', paymentLimiter, async (req, res) => {
   try {
     const { userId, returnUrl, licenseKey } = req.body;
 
@@ -165,16 +219,11 @@ app.post('/api/create-portal-session', async (req, res) => {
       return res.status(400).json({ error: 'Missing userId' });
     }
 
-    let license = licenses.get(userId);
+    let license = db.getLicenseByUserId(userId);
     
     // If license not found but licenseKey provided, try to find by licenseKey
     if (!license && licenseKey) {
-      for (const [uid, lic] of licenses.entries()) {
-        if (lic.licenseKey === licenseKey) {
-          license = lic;
-          break;
-        }
-      }
+      license = db.getLicenseByLicenseKey(licenseKey);
     }
     
     // If license not found by userId, try to find by looking up subscription from Stripe
@@ -200,9 +249,7 @@ app.post('/api/create-portal-session', async (req, res) => {
             if (latestSession.subscription) {
               subscriptionId = latestSession.subscription;
               const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-              customerId = typeof subscription.customer === 'string' 
-                ? subscription.customer 
-                : subscription.customer.id;
+              customerId = extractCustomerId(subscription.customer);
             }
           } else {
             const allSessions = await stripe.checkout.sessions.list({ limit: 100 });
@@ -214,9 +261,7 @@ app.post('/api/create-portal-session', async (req, res) => {
             if (matchingSession && matchingSession.subscription) {
               subscriptionId = matchingSession.subscription;
               const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-              customerId = typeof subscription.customer === 'string' 
-                ? subscription.customer 
-                : subscription.customer.id;
+              customerId = extractCustomerId(subscription.customer);
             }
           }
         } catch (sessionError) {
@@ -239,20 +284,17 @@ app.post('/api/create-portal-session', async (req, res) => {
           });
           
           if (matchingSub && matchingSub.customer) {
-            customerId = typeof matchingSub.customer === 'string' 
-              ? matchingSub.customer 
-              : matchingSub.customer.id;
+            customerId = extractCustomerId(matchingSub.customer);
             subscriptionId = matchingSub.id;
           }
         }
         
         // If we found a customerId, create or find the license
         if (customerId) {
-          const { findUserIdByCustomerId, createLicense } = require('./licenseService');
-          const existingUserId = findUserIdByCustomerId(customerId, licenses);
+          const existingUserId = findUserIdByCustomerId(customerId);
           
           if (existingUserId) {
-            license = licenses.get(existingUserId);
+            license = db.getLicenseByUserId(existingUserId);
           } else {
             if (!subscriptionId) {
               const customerSubs = await stripe.subscriptions.list({
@@ -267,8 +309,8 @@ app.post('/api/create-portal-session', async (req, res) => {
             }
             
             if (subscriptionId) {
-              createLicense(userId, customerId, subscriptionId, licenses);
-              license = licenses.get(userId);
+              createLicense(userId, customerId, subscriptionId);
+              license = db.getLicenseByUserId(userId);
             }
           }
         }
@@ -323,16 +365,15 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
   }
 
   try {
-    console.log(`[WEBHOOK] Received event: ${event.type}, id: ${event.id}`);
     
     switch (event.type) {
       case 'checkout.session.completed':
-        await handleCheckoutCompleted(event.data.object, licenses);
+        await handleCheckoutCompleted(event.data.object);
         break;
 
       case 'customer.subscription.updated':
       case 'customer.subscription.deleted':
-        handleSubscriptionUpdate(event.data.object, licenses);
+        handleSubscriptionUpdate(event.data.object);
         break;
 
       default:
@@ -351,7 +392,7 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
  * Body: { sessionId: "cs_...", userId: "fn_..." }
  * This is called by the extension as a fallback if webhook is delayed
  */
-app.post('/api/auto-create-license', async (req, res) => {
+app.post('/api/auto-create-license', paymentLimiter, async (req, res) => {
   try {
     const { sessionId, userId } = req.body;
 
@@ -360,8 +401,8 @@ app.post('/api/auto-create-license', async (req, res) => {
     }
 
     // Check if license already exists
-    const existing = licenses.get(userId);
-    if (isValidLicense(existing)) {
+    const existing = db.getLicenseByUserId(userId);
+    if (existing && isValidLicense(existing)) {
       return res.json({ 
         success: true, 
         licenseKey: existing.licenseKey,
@@ -387,7 +428,8 @@ app.post('/api/auto-create-license', async (req, res) => {
     }
 
     // Create license using shared function
-    const licenseKey = createLicense(userId, subscription.customer, subscription.id, licenses);
+    const customerId = extractCustomerId(subscription.customer);
+    const licenseKey = createLicense(userId, customerId, subscription.id);
     
     
     res.json({ 
@@ -435,7 +477,7 @@ if (IS_DEV) {
       }
 
       // Create license using shared function
-      const licenseKey = createLicense(userId, customerId, subscription.id, licenses);
+      const licenseKey = createLicense(userId, customerId, subscription.id);
       
       
       res.json({ 
@@ -454,14 +496,15 @@ if (IS_DEV) {
    * GET /api/debug/licenses
    */
   app.get('/api/debug/licenses', (req, res) => {
-    const licenseList = Array.from(licenses.entries()).map(([userId, license]) => ({
-      userId,
+    const allLicenses = db.getAllLicenses();
+    const licenseList = allLicenses.map(license => ({
+      userId: license.userId,
       licenseKey: license.licenseKey,
       customerId: license.stripeCustomerId,
       status: license.status
     }));
     
-    res.json({ count: licenses.size, licenses: licenseList });
+    res.json({ count: allLicenses.length, licenses: licenseList });
   });
 }
 

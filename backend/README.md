@@ -39,40 +39,44 @@ See [STRIPE_SETUP.md](../STRIPE_SETUP.md#api-reference) for detailed API documen
 - `POST /api/create-portal-session` - Create Customer Portal session
 - `POST /api/webhook` - Stripe webhook handler
 
-## Production Considerations
-
-1. **Database**: Replace in-memory `licenses` Map with a database (PostgreSQL, MongoDB, etc.)
-2. **User ID**: Use a stable user identifier (Chrome extension ID, email, etc.)
-3. **Security**: Add rate limiting, authentication, CORS restrictions
-4. **Monitoring**: Add logging, error tracking (Sentry, etc.)
-5. **Deployment**: Deploy to Heroku, Railway, AWS, etc.
-
 ## License Storage
 
-### Current Implementation (In-Memory)
+### SQLite Database
 
-**⚠️ Important:** The backend currently uses in-memory storage (`Map`) for licenses. This means:
-- Licenses are **lost when the server restarts**
-- A fallback mechanism queries Stripe API to recover licenses (slower, but works)
-- This is **fine for testing/small-scale use**, but **not ideal for production**
+The backend uses **SQLite** for persistent license storage:
+- ✅ **File-based**: No separate database server needed
+- ✅ **Persistent**: Survives server restarts
+- ✅ **Fast**: Excellent performance for this use case
+- ✅ **Simple**: Single file (`licenses.db`) in the backend directory
+- ✅ **Production-ready**: Perfect for small to medium scale deployments
 
-**Database Migration:** We plan to migrate to a database (PostgreSQL, MongoDB, etc.) later. The current Stripe lookup fallback ensures the system continues to work even after server restarts, but a database will provide:
-- Persistent storage (survives server restarts)
-- Better performance (no Stripe API lookups needed)
-- Scalability for production use
+The database file (`licenses.db`) is automatically created on first run. It's included in `.gitignore` to prevent committing license data.
 
-### Future Database Implementation
+**For larger scale deployments**, you can migrate to PostgreSQL/MongoDB if needed, but SQLite should handle thousands of licenses efficiently.
 
-When migrating to a database, use something like:
+## Production Considerations (Render Deployment)
 
-```javascript
-// Example with PostgreSQL
-const { Pool } = require('pg');
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+### ✅ Already Handled
+- **Backup**: Render automatically persists `licenses.db` on persistent disk
+- **User ID**: Using stable Chrome extension ID (`fn_${extensionId}_${timestamp}`)
+- **Monitoring**: Render provides built-in logging dashboard
+- **Deployment**: Configured for Render
 
-// Store license
-await pool.query(
-  'INSERT INTO licenses (user_id, license_key, stripe_customer_id, status) VALUES ($1, $2, $3, $4)',
-  [userId, licenseKey, customerId, 'active']
-);
-```
+### 🔒 Security Features (Implemented)
+
+✅ **Rate Limiting**: 
+- General API routes: 100 requests per 15 minutes per IP
+- Payment endpoints: 10 requests per 15 minutes per IP
+- Webhook endpoint excluded (protected by Stripe signature verification)
+
+✅ **CORS Restrictions**: 
+- Only allows Chrome extension origins (`chrome-extension://*`)
+- Allows backend URL for success/cancel pages
+- Blocks all other origins
+
+✅ **Webhook Security**: 
+- Stripe signature verification (already implemented)
+- Payment processing handled by Stripe (not your API)
+
+**Optional Enhancement:**
+- **Authentication**: Not critical since webhook has signature verification, Stripe handles payment auth, and license verification is read-only

@@ -1,6 +1,8 @@
 // License Service: Centralized license management logic
 // Handles license creation, validation, and storage
 
+const db = require('./database');
+
 /**
  * Generate a unique license key
  * @returns {string} License key in format: fn_timestamp_random
@@ -14,36 +16,21 @@ function generateLicenseKey() {
  * @param {string} userId - User identifier
  * @param {string} customerId - Stripe customer ID
  * @param {string} subscriptionId - Stripe subscription ID
- * @param {Map} licenses - License storage map
  * @returns {string} Generated license key
  */
-function createLicense(userId, customerId, subscriptionId, licenses) {
+function createLicense(userId, customerId, subscriptionId) {
   const licenseKey = generateLicenseKey();
-  
-  licenses.set(userId, {
-    licenseKey,
-    stripeCustomerId: customerId,
-    stripeSubscriptionId: subscriptionId,
-    status: 'active',
-    expiresAt: null, // Subscription-based, no expiration
-  });
-  
+  db.upsertLicense(userId, licenseKey, customerId, subscriptionId, 'active');
   return licenseKey;
 }
 
 /**
  * Find user ID by Stripe customer ID
  * @param {string} customerId - Stripe customer ID
- * @param {Map} licenses - License storage map
  * @returns {string|null} User ID if found, null otherwise
  */
-function findUserIdByCustomerId(customerId, licenses) {
-  for (const [userId, license] of licenses.entries()) {
-    if (license.stripeCustomerId === customerId) {
-      return userId;
-    }
-  }
-  return null;
+function findUserIdByCustomerId(customerId) {
+  return db.getUserIdByCustomerId(customerId);
 }
 
 /**
